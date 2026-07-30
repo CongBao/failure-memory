@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import subprocess
@@ -86,8 +87,22 @@ def test_tracked_text_has_no_private_checkout_or_process_artifacts() -> None:
 def test_public_versions_are_consistent() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     plugin = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    runtime_module = ast.parse(
+        (ROOT / "src" / "failure_memory" / "__init__.py").read_text(encoding="utf-8")
+    )
+    runtime_version = next(
+        node.value.value
+        for node in runtime_module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
 
     assert project["project"]["version"] == plugin["version"]
+    assert runtime_version == plugin["version"]
     assert re.fullmatch(r"\d+\.\d+\.\d+", plugin["version"])
 
 

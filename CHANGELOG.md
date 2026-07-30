@@ -17,7 +17,8 @@ use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Explicit reviewed reuse, generalization, and distinct-lesson dispositions.
 - Codex, Claude Code, GitHub Copilot, and Cursor plugin manifests.
 - Bounded session-start hooks that inject static guidance without storing prompts.
-- Duplicate-safe Codex/Copilot installation planning and application.
+- Duplicate-safe Codex/Copilot installation planning and application, including bundle
+  commit comparison for same-version Copilot rebuilds.
 - Runtime harness detection with one platform-global store across every projection.
 
 ### Changed

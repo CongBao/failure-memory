@@ -22,14 +22,35 @@ class HostState:
     executable: str
     installed_versions: tuple[str, ...]
     desired_version: str
+    installed_build_commit: str | None
+    desired_build_commit: str | None
 
     @property
     def action(self) -> str:
         if len(self.installed_versions) > 1:
             return "conflict"
+        if self.installed_versions != (self.desired_version,):
+            return "install" if not self.installed_versions else "update"
+        if (
+            self.target == "copilot"
+            and self.installed_build_commit is not None
+            and self.desired_build_commit is not None
+            and self.installed_build_commit != self.desired_build_commit
+        ):
+            return "update"
         if self.installed_versions == (self.desired_version,):
             return "noop"
-        return "install" if not self.installed_versions else "update"
+        raise AssertionError("unreachable host state")
+
+    @property
+    def same_version_content_update(self) -> bool:
+        return (
+            self.target == "copilot"
+            and self.installed_versions == (self.desired_version,)
+            and self.installed_build_commit is not None
+            and self.desired_build_commit is not None
+            and self.installed_build_commit != self.desired_build_commit
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -72,6 +93,19 @@ def _manifest_version(bundle: Path, target: str) -> str:
     return str(value["version"])
 
 
+def _build_commit(root: Path) -> str | None:
+    manifest = root / "build-manifest.json"
+    if not manifest.is_file():
+        return None
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    commit = value.get("commit")
+    return commit if isinstance(commit, str) and commit else None
+
+
+def _copilot_install_root() -> Path:
+    return Path.home() / ".copilot" / "installed-plugins" / "_direct" / PLUGIN_NAME
+
+
 def _run(executable: str, *arguments: str, check: bool = True) -> str:
     result = subprocess.run(
         [executable, *arguments],
@@ -111,6 +145,10 @@ def _state(bundle: Path, target: str) -> HostState:
         executable=executable,
         installed_versions=_installed_versions(target, executable),
         desired_version=_manifest_version(bundle, target),
+        installed_build_commit=(
+            _build_commit(_copilot_install_root()) if target == "copilot" else None
+        ),
+        desired_build_commit=_build_commit(bundle),
     )
 
 
@@ -126,6 +164,10 @@ def _apply(bundle: Path, state: HostState) -> None:
         if state.action == "update":
             _run(state.executable, "plugin", "remove", identity)
         _run(state.executable, "plugin", "add", identity)
+        return
+    if state.same_version_content_update:
+        _run(state.executable, "plugin", "uninstall", PLUGIN_NAME)
+        _run(state.executable, "plugin", "install", str(bundle))
         return
     if state.action == "update":
         try:
@@ -168,6 +210,8 @@ def main() -> int:
                 "target": state.target,
                 "installed_versions": list(state.installed_versions),
                 "desired_version": state.desired_version,
+                "installed_build_commit": state.installed_build_commit,
+                "desired_build_commit": state.desired_build_commit,
                 "action": state.action,
                 "duplicate_installation": len(state.installed_versions) > 1,
             }

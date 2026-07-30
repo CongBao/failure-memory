@@ -179,7 +179,7 @@ def test_initialize_returns_capabilities_and_preserves_empty_string_id() -> None
     assert response["result"] == {
         "protocolVersion": "2025-11-25",
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "failure-memory", "version": "0.3.0"},
+        "serverInfo": {"name": "failure-memory", "version": "0.4.0"},
         "instructions": (
             "Use failure memory only for real failures: an established expectation, "
             "an observed mismatch, and material impact or recurrence risk."

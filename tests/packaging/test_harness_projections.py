@@ -96,3 +96,32 @@ def test_installer_detects_stable_versions_and_duplicate_identities(
         "0.4.0",
         "0.3.0",
     )
+
+
+def test_installer_reinstalls_changed_copilot_content_at_same_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    state = installer.HostState(
+        target="copilot",
+        executable="/usr/bin/copilot",
+        installed_versions=("0.4.0",),
+        desired_version="0.4.0",
+        installed_build_commit="old-commit",
+        desired_build_commit="new-commit",
+    )
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run",
+        lambda executable, *arguments: calls.append((executable, *arguments)) or "",
+    )
+
+    assert state.action == "update"
+    assert state.same_version_content_update is True
+    installer._apply(tmp_path, state)
+    assert calls == [
+        ("/usr/bin/copilot", "plugin", "uninstall", "failure-memory"),
+        ("/usr/bin/copilot", "plugin", "install", str(tmp_path)),
+    ]

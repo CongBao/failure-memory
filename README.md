@@ -59,8 +59,8 @@ become incidents or lessons.
   Copilot, and Cursor.
 - Ships bounded session-start hooks that add only static workflow guidance; hooks never
   persist prompts, query memory, or record lessons.
-- Includes a duplicate-safe installer that detects stable host plugin identities and
-  chooses install, update, or no-op.
+- Includes a duplicate-safe installer that detects stable host plugin identities, versions,
+  and local bundle commits before choosing install, update, or no-op.
 - Keeps runtime state outside the source checkout and plugin installation.
 
 Production feedback ranking and additional vector-store adapters remain future work.
@@ -220,8 +220,9 @@ python3 scripts/install_harness.py \
 ```
 
 The first command is read-only. The second installs missing projections, updates an older
-single installation, and leaves an identical installation unchanged. It fails closed if a
-host reports duplicate `failure-memory` identities. Installing or removing a projection
+single installation, reinstalls changed Copilot bundle content even when the semantic
+version is unchanged, and leaves an identical installation untouched. It fails closed if
+a host reports duplicate `failure-memory` identities. Installing or removing a projection
 never removes the platform-global database.
 
 Start a new host session after installation so it reloads the plugin's skills, hooks, and
