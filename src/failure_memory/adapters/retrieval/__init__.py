@@ -1,0 +1,1 @@
+"""Derived retrieval-index adapters."""

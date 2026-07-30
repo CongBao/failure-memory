@@ -1,0 +1,32 @@
+[
+  {
+    "name": "new feature is not a failure",
+    "classification": "requirement_update",
+    "expected": "reject"
+  },
+  {
+    "name": "newly supplied detail is not a failure",
+    "classification": "requirement_clarification",
+    "expected": "reject"
+  },
+  {
+    "name": "first-time preference is not a failure",
+    "classification": "preference_update",
+    "expected": "reject"
+  },
+  {
+    "name": "missed accepted invariant is a failure",
+    "classification": "real_failure",
+    "expected": "accept"
+  },
+  {
+    "name": "mixed feedback without separated failure is deferred",
+    "classification": "mixed",
+    "expected": "defer"
+  },
+  {
+    "name": "uncertain feedback is deferred",
+    "classification": "uncertain",
+    "expected": "defer"
+  }
+]

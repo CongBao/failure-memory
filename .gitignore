@@ -1,0 +1,72 @@
+# Python bytecode and environments
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+*.egg-info/
+
+# Isolated development worktrees
+/.worktrees/
+
+# Test, type-check, lint, and coverage output
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build and generated plugin artifacts
+/build/
+/dist/
+/site/
+/packaging/out/
+
+# Failure Memory mutable runtime state
+/.runtime/
+/plugin-data/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+
+# Adapter environments, downloaded models, and caches
+/.adapters/
+/.models/
+/.cache/
+
+# Local logs and process files
+*.log
+*.pid
+*.sock
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+.envrc
+/.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+credentials.local.json
+secrets.json
+secrets.local.json
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

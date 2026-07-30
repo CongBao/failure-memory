@@ -1,0 +1,1 @@
+"""SQLite event-store implementation."""

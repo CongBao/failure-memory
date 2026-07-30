@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "failure-memory": {
+      "command": "python3",
+      "args": [
+        "scripts/failure_memory_mcp.py"
+      ],
+      "cwd": ".",
+      "env": {
+        "FAILURE_MEMORY_HARNESS": "codex",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      },
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 30
+    }
+  }
+}

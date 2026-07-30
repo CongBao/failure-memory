@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recall Failure Lessons"
+  short_description: "Recall bounded lessons before risky work"
+  default_prompt: "Use $recall-failure-lessons to make one evidence-gated, exact-first recall before proceeding with this risky task."

@@ -1,0 +1,56 @@
+{
+  "evidence_version": 1,
+  "algorithm": "sha256",
+  "behavior_digest_definition": "sha256 of exact SKILL.md bytes after removing exactly one generated metadata note block and its following separator",
+  "renderer_digest_definition": "sha256 of exact tools/render_skills.py bytes",
+  "pressure": {
+    "scenarios_path": "tests/skills/pressure-scenarios.md",
+    "scenarios_sha256": "bcd38a2240362b14ddd6c8ff3e73ba91bf7a81d59ab9f069a782f18172d3a6c8",
+    "results_path": "tests/skills/pressure-results.md",
+    "results_sha256": "8bd75d4ad9cf71ff6d81000809b710f4ded632aee29cfe7246435411e86cca9e"
+  },
+  "skills": {
+    "record-agent-failure": {
+      "policy_sha256": "37acd89ff6cf98655e02f14bbe2af40836b1cef854bc58bb699d1a729c1628ce",
+      "behavior_sha256": "501aafd6da4a77107c4ffc38cb276db21824645d9a1b330d244b799aaa71fbf1",
+      "renderer_sha256": "4b524d3cba4491d5bd7825a5c6d343a60297bc6ddfafe269fa8f01af4d2c36d0",
+      "pressure_families": [
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "final_qualifying": {
+        "passed": 15,
+        "total": 15
+      },
+      "adjudication": {
+        "kind": "unchanged_semantics",
+        "basis": "exact_behavior_bytes_unchanged",
+        "reviewed_against_commit": "2709bfd",
+        "pressure_rerun": false
+      },
+      "binding_sha256": "99f1cecfec6fd104a3e2bbdf96c5dddce37398ec7132f4774615ce6bba2a6c0d"
+    },
+    "recall-failure-lessons": {
+      "policy_sha256": "5f80d5f51a83bab13f2a447cd5a9521d82e9bbcf643fe1578a19e2441dfc4f36",
+      "behavior_sha256": "0e4559348e76c7f7903233538306cc1aa618ce9b48d5c6cc07d9b9aeba67cec4",
+      "renderer_sha256": "4b524d3cba4491d5bd7825a5c6d343a60297bc6ddfafe269fa8f01af4d2c36d0",
+      "pressure_families": [
+        "C1",
+        "C2",
+        "C3"
+      ],
+      "final_qualifying": {
+        "passed": 3,
+        "total": 3
+      },
+      "adjudication": {
+        "kind": "pressure_rerun",
+        "basis": "fresh_forward_test",
+        "reviewed_against_commit": "23e9ab6",
+        "pressure_rerun": true
+      },
+      "binding_sha256": "8ca8d0b9fa9970d2c1ba31a19c5db76a92fd8bcfd3107eba8897018ebefb76e8"
+    }
+  }
+}
