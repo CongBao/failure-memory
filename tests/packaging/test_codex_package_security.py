@@ -1450,6 +1450,10 @@ def test_simulated_linux_descriptor_path_reports_cross_parent_generated_move(
     assert (generated / ".codex-plugin" / "plugin.json").is_file()
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="F_GETPATH stale-name injection applies only to macOS",
+)
 def test_stale_descriptor_path_is_rejected_with_linked_path_unresolved_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1503,6 +1507,10 @@ def test_stale_descriptor_path_is_rejected_with_linked_path_unresolved_diagnosti
     assert "generated_identity=device=" in str(caught.value)
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="F_GETPATH stale-name injection applies only to macOS",
+)
 def test_nonexistent_stale_descriptor_path_does_not_mislabel_linked_inode_unlinked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

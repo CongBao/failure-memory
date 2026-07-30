@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 STORAGE_BUSY_MESSAGE = "Failure-memory storage is busy; retry the operation."
-SEMANTIC_SETUP_MESSAGE = (
-    "Semantic adapter setup is required; run failure-memory adapters install."
-)
+SEMANTIC_SETUP_MESSAGE = "Semantic adapter setup is required; run failure-memory adapters install."
 ADAPTER_SETUP_FAILED_MESSAGE = (
     "Optional semantic adapter setup failed; verify network trust and retry."
 )

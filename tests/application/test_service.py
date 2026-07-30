@@ -451,9 +451,9 @@ def test_reviewed_lifecycle_transition_appends_a_version_and_preserves_history(
         (recorded.lesson_version_id, 1, "proposed"),
         (transitioned["new_version_id"], 2, "verified"),
     ]
-    assert store.connection.execute(
-        "SELECT COUNT(*) FROM lesson_lifecycle_event"
-    ).fetchone()[0] == 1
+    assert (
+        store.connection.execute("SELECT COUNT(*) FROM lesson_lifecycle_event").fetchone()[0] == 1
+    )
     related = service.find_related_failures(
         drafts[0].expected_invariant,
         drafts[0].controllable_cause,

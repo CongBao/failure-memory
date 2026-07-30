@@ -80,9 +80,7 @@ def _reviewed_drafts(
     service: FailureMemoryService, capture_attempt_id: str
 ) -> tuple[dict[str, object], dict[str, object]]:
     arguments = _drafts(capture_attempt_id)
-    review_input = {
-        key: arguments[key] for key in ("capture_attempt_id", "incident", "lesson")
-    }
+    review_input = {key: arguments[key] for key in ("capture_attempt_id", "incident", "lesson")}
     review = dispatch_tool("review_failure_recording", review_input, service)
     _assert_envelope(review)
     review_id = review["structuredContent"]["review_id"]
@@ -466,16 +464,12 @@ def test_every_success_payload_has_the_published_output_shape(
         ),
         "get_failure_memory_metrics": dispatch_tool("get_failure_memory_metrics", {}, service),
         "get_failure_recall_metrics": dispatch_tool("get_failure_recall_metrics", {}, service),
-        "get_failure_learning_metrics": dispatch_tool(
-            "get_failure_learning_metrics", {}, service
-        ),
+        "get_failure_learning_metrics": dispatch_tool("get_failure_learning_metrics", {}, service),
         "failure_memory_retrieval_status": dispatch_tool(
             "failure_memory_retrieval_status", {}, service
         ),
         "build_failure_memory_index": dispatch_tool("build_failure_memory_index", {}, service),
-        "failure_memory_store_status": dispatch_tool(
-            "failure_memory_store_status", {}, service
-        ),
+        "failure_memory_store_status": dispatch_tool("failure_memory_store_status", {}, service),
         "run_failure_ranking_experiment": dispatch_tool(
             "run_failure_ranking_experiment", {}, service
         ),

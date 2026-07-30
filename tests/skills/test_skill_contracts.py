@@ -300,6 +300,9 @@ def test_renderer_is_stdlib_only_and_has_no_machine_absolute_path() -> None:
 @pytest.mark.parametrize("skill", SKILL_NAMES)
 def test_generated_frontmatter_and_official_validator(skill: str) -> None:
     assert _read_frontmatter(skill) == EXPECTED_CONTRACTS[skill]["skill"]
+    validator = _validator_path()
+    if not validator.is_file():
+        pytest.skip("official skill validator is unavailable")
     uv = shutil.which("uv")
     assert uv is not None
     completed = subprocess.run(
@@ -309,7 +312,7 @@ def test_generated_frontmatter_and_official_validator(skill: str) -> None:
             "--with",
             "PyYAML>=6,<7",
             "python",
-            str(_validator_path()),
+            str(validator),
             str(SKILLS_ROOT / skill),
         ],
         cwd=PROJECT_ROOT,

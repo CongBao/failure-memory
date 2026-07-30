@@ -236,10 +236,7 @@ class RecallOutcome:
     def __post_init__(self) -> None:
         if self.confidence is not None and not 0 <= self.confidence <= 1:
             raise ValueError("confidence must be between 0 and 1")
-        if (
-            self.outcome is RecallOutcomeKind.MISSED_RELEVANT
-            and self.lesson_version_id is None
-        ):
+        if self.outcome is RecallOutcomeKind.MISSED_RELEVANT and self.lesson_version_id is None:
             raise ValueError("missed relevant feedback requires a lesson version")
 
 

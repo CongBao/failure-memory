@@ -304,16 +304,16 @@ def test_tools_list_returns_all_immutable_tools_after_initialize() -> None:
         "record_recall_outcome",
         "get_failure_memory_metrics",
         "get_failure_recall_metrics",
-            "failure_memory_retrieval_status",
-            "build_failure_memory_index",
-            "get_failure_learning_metrics",
-            "failure_memory_store_status",
-            "transition_failure_lesson",
-            "run_failure_ranking_experiment",
-            "propose_failure_lesson_clusters",
-            "failure_memory_setup_status",
-            "failure_memory_doctor",
-        }
+        "failure_memory_retrieval_status",
+        "build_failure_memory_index",
+        "get_failure_learning_metrics",
+        "failure_memory_store_status",
+        "transition_failure_lesson",
+        "run_failure_ranking_experiment",
+        "propose_failure_lesson_clusters",
+        "failure_memory_setup_status",
+        "failure_memory_doctor",
+    }
 
 
 def test_tools_call_returns_the_dispatcher_result_directly() -> None:

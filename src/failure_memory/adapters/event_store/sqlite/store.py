@@ -365,20 +365,11 @@ class SQLiteEventStore(EventStorePort):
         candidate_ids = tuple(dict.fromkeys(candidate_lesson_version_ids))
         if len(candidate_ids) > 3:
             raise ValueError("generalization review accepts at most three candidates")
-        if (
-            recommendation is GeneralizationRecommendation.REUSE_EXACT
-            and len(candidate_ids) != 1
-        ):
+        if recommendation is GeneralizationRecommendation.REUSE_EXACT and len(candidate_ids) != 1:
             raise ValueError("exact reuse review requires exactly one candidate")
-        if (
-            recommendation is GeneralizationRecommendation.REVIEW_RELATED
-            and not candidate_ids
-        ):
+        if recommendation is GeneralizationRecommendation.REVIEW_RELATED and not candidate_ids:
             raise ValueError("related review requires at least one candidate")
-        if (
-            recommendation is GeneralizationRecommendation.CREATE_DISTINCT
-            and candidate_ids
-        ):
+        if recommendation is GeneralizationRecommendation.CREATE_DISTINCT and candidate_ids:
             raise ValueError("distinct review cannot include candidates")
         for candidate_id in candidate_ids:
             self._current_lesson_for_version(candidate_id)

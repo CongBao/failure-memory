@@ -135,9 +135,7 @@ class GlobalStoreImporter:
         import_id = new_id("imp")
         try:
             self.target.execute("BEGIN IMMEDIATE")
-            profile_map = self._import_retrieval_profiles(
-                source, imported_counts, skipped_counts
-            )
+            profile_map = self._import_retrieval_profiles(source, imported_counts, skipped_counts)
             for table in _CORE_TABLES:
                 if table == "retrieval_profile_snapshot" or not _table_exists(source, table):
                     continue
@@ -146,9 +144,7 @@ class GlobalStoreImporter:
                 if table == "retrieval_profile_snapshot" or not _table_exists(source, table):
                     continue
                 overrides = (
-                    {"retrieval_profile_id": profile_map}
-                    if table == "recall_attempt"
-                    else None
+                    {"retrieval_profile_id": profile_map} if table == "recall_attempt" else None
                 )
                 self._import_table(
                     source,
@@ -161,9 +157,7 @@ class GlobalStoreImporter:
                 if not _table_exists(source, table):
                     continue
                 overrides = (
-                    {"retrieval_profile_id": profile_map}
-                    if table == "lesson_cluster_run"
-                    else None
+                    {"retrieval_profile_id": profile_map} if table == "lesson_cluster_run" else None
                 )
                 self._import_table(
                     source,
@@ -235,9 +229,7 @@ class GlobalStoreImporter:
             ],
         }
 
-    def _plan_table(
-        self, source: sqlite3.Connection, table: str
-    ) -> tuple[int, int, list[str]]:
+    def _plan_table(self, source: sqlite3.Connection, table: str) -> tuple[int, int, list[str]]:
         columns = _columns(source, table)
         primary_key = _primary_key(columns)
         importable = 0
@@ -256,9 +248,7 @@ class GlobalStoreImporter:
                 conflicts.append(f"{table}:{row[primary_key]}")
         return importable, skipped, conflicts
 
-    def _plan_retrieval_profiles(
-        self, source: sqlite3.Connection
-    ) -> tuple[int, int, list[str]]:
+    def _plan_retrieval_profiles(self, source: sqlite3.Connection) -> tuple[int, int, list[str]]:
         if not _table_exists(source, "retrieval_profile_snapshot"):
             return 0, 0, []
         importable = 0
@@ -384,9 +374,7 @@ def discover_legacy_databases(
     target = target_database.resolve()
     return tuple(
         dict.fromkeys(
-            path.resolve()
-            for path in candidates
-            if path.is_file() and path.resolve() != target
+            path.resolve() for path in candidates if path.is_file() and path.resolve() != target
         )
     )
 
@@ -410,9 +398,7 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     )
 
 
-def _existing_tables(
-    connection: sqlite3.Connection, candidates: Iterable[str]
-) -> tuple[str, ...]:
+def _existing_tables(connection: sqlite3.Connection, candidates: Iterable[str]) -> tuple[str, ...]:
     return tuple(table for table in candidates if _table_exists(connection, table))
 
 
@@ -440,9 +426,7 @@ def _primary_key(columns: tuple[sqlite3.Row, ...]) -> str:
     return primary[0]
 
 
-def _rows(
-    connection: sqlite3.Connection, table: str, primary_key: str
-) -> tuple[sqlite3.Row, ...]:
+def _rows(connection: sqlite3.Connection, table: str, primary_key: str) -> tuple[sqlite3.Row, ...]:
     return tuple(connection.execute(f"SELECT * FROM {table} ORDER BY {primary_key}").fetchall())
 
 
@@ -464,9 +448,7 @@ def _profile_equal(source: sqlite3.Row, target: sqlite3.Row) -> bool:
     return all(source_values[key] == target_values[key] for key in shared)
 
 
-def _logical_fingerprint(
-    connection: sqlite3.Connection, tables: tuple[str, ...]
-) -> str:
+def _logical_fingerprint(connection: sqlite3.Connection, tables: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
     for table in sorted(tables):
         columns = _columns(connection, table)

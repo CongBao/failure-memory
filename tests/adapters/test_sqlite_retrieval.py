@@ -168,8 +168,7 @@ def test_sqlite_vec_runs_exact_cosine_knn_and_hybrid_channels(tmp_path: Path) ->
     }
     pairs = index.similar_pairs(documents, distance_threshold=0.01)
     assert [
-        (pair.left_lesson_version_id, pair.right_lesson_version_id, pair.distance)
-        for pair in pairs
+        (pair.left_lesson_version_id, pair.right_lesson_version_id, pair.distance) for pair in pairs
     ] == [("lv-migration", "lv-schema-copy", pytest.approx(0.0))]
     index.close()
 

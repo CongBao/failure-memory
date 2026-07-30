@@ -15,14 +15,7 @@ NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
 
 
 def _database(root: Path) -> Path:
-    return (
-        root
-        / "adapters"
-        / "event-store"
-        / "sqlite"
-        / "primary"
-        / "failure-memory.sqlite3"
-    )
+    return root / "adapters" / "event-store" / "sqlite" / "primary" / "failure-memory.sqlite3"
 
 
 def _record_lesson(service: FailureMemoryService) -> tuple[str, str]:
@@ -165,10 +158,11 @@ def test_import_aborts_before_writes_on_conflicting_record_id(tmp_path: Path) ->
     assert plan.conflicts == (f"capture_attempt:{conflicting['id']}",)
     with pytest.raises(ValueError, match="record ID collisions"):
         target.store_importer.apply(source_database)
-    assert target.store.connection.execute(
-        "SELECT COUNT(*) FROM source_store_import"
-    ).fetchone()[0] == 0
-    assert target.store.connection.execute(
-        "SELECT COUNT(*) FROM capture_attempt"
-    ).fetchone()[0] == 1
+    assert (
+        target.store.connection.execute("SELECT COUNT(*) FROM source_store_import").fetchone()[0]
+        == 0
+    )
+    assert (
+        target.store.connection.execute("SELECT COUNT(*) FROM capture_attempt").fetchone()[0] == 1
+    )
     target.close()

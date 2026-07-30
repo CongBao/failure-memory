@@ -62,7 +62,8 @@ class _ProposalIndex:
     ) -> tuple[SimilarityPair, ...]:
         assert distance_threshold == pytest.approx(0.2)
         identifiers = sorted(
-            document.lesson_version.id for document in documents  # type: ignore[union-attr]
+            document.lesson_version.id
+            for document in documents  # type: ignore[union-attr]
         )
         return (SimilarityPair(identifiers[0], identifiers[1], 0.05),)
 
@@ -399,12 +400,21 @@ def test_semantic_clustering_records_proposals_without_merging_lessons(
     assert proposal["cluster_count"] == 1
     assert proposal["automatic_merge"] is False
     assert recall_service.store.counts()["lesson"] == 2
-    assert recall_service.store.connection.execute(
-        "SELECT COUNT(*) FROM lesson_cluster_run"
-    ).fetchone()[0] == 1
-    assert recall_service.store.connection.execute(
-        "SELECT COUNT(*) FROM lesson_cluster_member"
-    ).fetchone()[0] == 2
-    assert recall_service.store.connection.execute(
-        "SELECT COUNT(*) FROM lesson_generalization_proposal"
-    ).fetchone()[0] == 1
+    assert (
+        recall_service.store.connection.execute(
+            "SELECT COUNT(*) FROM lesson_cluster_run"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        recall_service.store.connection.execute(
+            "SELECT COUNT(*) FROM lesson_cluster_member"
+        ).fetchone()[0]
+        == 2
+    )
+    assert (
+        recall_service.store.connection.execute(
+            "SELECT COUNT(*) FROM lesson_generalization_proposal"
+        ).fetchone()[0]
+        == 1
+    )
