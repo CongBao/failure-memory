@@ -1,314 +1,227 @@
 # Failure Memory
 
-Failure Memory helps AI agents distinguish real, reusable failures from requirement
-changes, store durable lessons locally, and recall those lessons before similar work.
+[![CI](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml)
+[![Python 3.13+](https://img.shields.io/badge/Python-3.13%2B-3776AB.svg)](https://www.python.org/)
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-The project is local-first and designed around adapter boundaries so storage, retrieval,
-embeddings, and agent-harness integrations can evolve independently. One owner-private
-global store is shared by trusted local harnesses; harness, workspace, and session values
-are retained as origin metadata rather than used as retrieval boundaries. The current
-release includes a dependency-free SQLite event store, exact and FTS5 recall, optional
-local sqlite-vec/FastEmbed semantic search, append-only learning telemetry, a JSON CLI,
-an MCP server, and plugin projections for Codex, Claude Code, GitHub Copilot, and Cursor
-with separate recording and recall skills.
+Failure Memory gives AI coding agents a shared, local memory of mistakes worth
+remembering.
 
-## Why this exists
+It exists because **not every correction is a failure**. A user may be adding a new
+requirement, clarifying missing information, or changing a preference. Saving all of
+those as “lessons” creates noisy memory and makes the agent less reliable.
 
-Agent feedback is not automatically a failure. A user may be adding a requirement,
-clarifying previously unavailable information, or stating a preference for the first
-time. Recording every correction creates noisy memory and makes future recall less
-trustworthy.
+Failure Memory records only durable lessons from real failures, recalls them before
+similar work, and learns whether each recall was useful.
 
-Failure Memory applies two gates:
+## Why use it?
 
-1. **Qualification:** Was there a prior expectation, an observable mismatch, material
-   impact or recurrence risk, a controllable cause, and a durable prevention lesson?
-2. **Generalization review:** Does the accepted incident exactly match an existing
-   lesson, fit a reviewed related lesson, support a broader proposed lesson, or need a
-   distinct lesson?
+Without a deliberate failure-memory system, agents tend to:
 
-Rejected and deferred evaluations remain auditable capture attempts, but they do not
-become incidents or lessons.
+- repeat mistakes across sessions and tools;
+- treat requirement changes as failures;
+- save several copies of the same lesson;
+- recall loosely related advice without measuring whether it helped.
 
-## Current capabilities
+Failure Memory adds two review gates:
 
-- Classifies `requirement_update`, `requirement_clarification`, `preference_update`,
-  `real_failure`, `mixed`, and `uncertain` feedback.
-- Requires evaluation before any incident write.
-- Stores immutable incidents and versioned proposed lessons in SQLite.
-- Requires a second-tier exact and bounded similarity review before the public recording
-  tool can write an accepted failure.
-- Requires exact reuse and records an explicit rationale for reviewed reuse,
-  generalization, or distinct creation; similarity never decides by itself.
-- Redacts recognized credential, bearer-token, and private-key patterns before storage.
-- Performs global FTS5 lexical recall and optional exact cosine KNN with sqlite-vec.
-- Fuses lexical and vector rankings with reciprocal-rank fusion while preserving exact
-  signature precedence.
-- Stores privacy-preserving recall attempts, candidates, selections, and outcome feedback
-  in append-only tables; raw recall prompts are not stored.
-- Supports structured `false_positive`, usefulness, staleness, contradiction, and
-  recurrence-prevention outcomes, plus `missed_relevant` feedback for false negatives.
-- Reports feedback coverage, precision at one and three, usefulness, false-positive,
-  missed-relevant, exact-reuse, and per-harness metrics.
-- Appends reviewed lesson lifecycle transitions; historical versions remain immutable.
-- Runs feedback ranking only as recorded shadow experiments and creates semantic
-  generalization proposals without activating ranking changes or merging lessons.
-- Plans, verifies, and performs idempotent copy-only imports from earlier local stores.
-- Exposes seventeen schema-validated MCP tools with accurate read/write annotations.
-- Provides the same separate recording and recall skills to Codex, Claude Code, GitHub
-  Copilot, and Cursor.
-- Ships bounded session-start hooks that add only static workflow guidance; hooks never
-  persist prompts, query memory, or record lessons.
-- Includes a duplicate-safe installer that detects stable host plugin identities, versions,
-  and local bundle commits before choosing install, update, or no-op.
-- Keeps runtime state outside the source checkout and plugin installation.
+1. **Failure qualification** — was there an established expectation, an observable
+   mismatch, meaningful impact or recurrence risk, a controllable cause, and a durable
+   prevention lesson?
+2. **Generalization review** — should the incident reuse an existing lesson, support a
+   broader version of one, or remain distinct?
 
-Production feedback ranking and additional vector-store adapters remain future work.
-Similarity never merges or reuses lessons automatically.
+Similarity search suggests at most three related lessons. It never merges or promotes a
+lesson automatically.
 
-## Requirements
+## Supported agents
 
-- Python 3.13 or newer
-- Git, when building a commit-stamped Codex bundle
-- [`uv`](https://docs.astral.sh/uv/) for the recommended development workflow
+| Agent or harness | Support | Installation |
+| --- | --- | --- |
+| OpenAI Codex | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
+| Claude Code | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
+| GitHub Copilot CLI | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
+| Cursor | Plugin, skills, hooks, and MCP tools | Local plugin or team marketplace |
+| Other MCP clients | Core MCP tools | Configure the bundled stdio server manually |
 
-Python 3.14 is the primary development version. Exact and lexical recall have no
-third-party Python dependencies. Semantic recall uses an explicitly installed private
-adapter runtime; plugin installation itself never downloads native packages or models.
+All supported harnesses use the same memory for the current OS user. Installing the
+plugin in a second agent does not create a second database.
 
-## Quick start: command line
+## Install
 
-Create the environment and install the project:
+### Requirements
+
+- Python 3.13 or newer; Python 3.14 is recommended
+- Git
+
+Check Python before installing:
 
 ```bash
-uv sync --extra dev
-uv run failure-memory setup-status
-uv run failure-memory doctor
-uv run failure-memory metrics
-uv run failure-memory recall-metrics
-uv run failure-memory learning-metrics
-uv run failure-memory store status
-uv run failure-memory index status
+python3 --version
 ```
 
-Commands emit one JSON object on standard output. Diagnostics use standard error.
-`evaluate`, `review`, `record`, `recall`, and `feedback` accept one JSON object from a file or
-standard input:
+### Codex
 
 ```bash
-uv run failure-memory evaluate --input candidate.json
-uv run failure-memory evaluate --input - < candidate.json
-
-uv run failure-memory review --input accepted-incident.json
-uv run failure-memory record --input accepted-incident.json
-uv run failure-memory record --input - < accepted-incident.json
-
-uv run failure-memory recall --input recall-query.json
-uv run failure-memory feedback --input recall-outcome.json
+codex plugin marketplace add CongBao/failure-memory
+codex plugin add failure-memory@failure-memory
 ```
 
-An accepted evaluation returns a `capture_attempt_id`. Pass that identifier and the
-sanitized drafts to `review`; then pass the returned `review_id`, an explicit disposition,
-rationale, and the unchanged drafts to `record`. Rejected or deferred captures cannot be
-reviewed or recorded.
+Start a new Codex task after installation so the skills, hooks, and MCP server are
+loaded.
 
-## Retrieval profiles
-
-Every recall is exact-first and global to the current OS user's Failure Memory.
-`auto` checks a complete invariant, cause, and prevention signature before bounded
-similarity retrieval. Similarity calls require task context plus at least one explicit
-discriminator such as an invariant, cause, prevention action, or component. The default
-result limit is three and the hard limit is five. Origin metadata remains available for
-audit and per-harness metrics, but it does not hide lessons created by another harness.
-
-The built-in profile uses SQLite FTS5. To add local semantic search, inspect the explicit
-plan and install the pinned adapter:
+### Claude Code
 
 ```bash
-uv run failure-memory adapters list
+claude plugin marketplace add CongBao/failure-memory
+claude plugin install failure-memory@failure-memory
+```
+
+Run `/reload-plugins` in an active Claude Code session, or start a new session.
+
+### GitHub Copilot CLI
+
+```bash
+copilot plugin install CongBao/failure-memory
+```
+
+This direct GitHub installation uses the repository's Copilot plugin manifest. The
+repository can also be added as a Copilot marketplace for browsing and managed updates.
+Start a new Copilot CLI session after installation.
+
+### Cursor
+
+Failure Memory includes a Cursor plugin projection. Until it is listed in the public
+Cursor Marketplace, install it as a local plugin:
+
+```bash
+git clone https://github.com/CongBao/failure-memory.git
+mkdir -p ~/.cursor/plugins/local
+ln -s "$PWD/failure-memory" ~/.cursor/plugins/local/failure-memory
+```
+
+Restart Cursor or run **Developer: Reload Window**. Teams and Enterprise users can also
+import this repository from **Dashboard → Plugins → Add Marketplace**.
+
+## How to use it
+
+Failure Memory provides two agent skills:
+
+- **Recall failure lessons** before risky, repeated, or failure-prone work.
+- **Record an agent failure** after a real mismatch has been confirmed.
+
+You can ask naturally; you do not need to call database tools yourself.
+
+### 1. Recall lessons before work
+
+Example prompts:
+
+```text
+Before changing this installer, recall any relevant failure lessons.
+```
+
+```text
+Check Failure Memory for lessons about plugin identity and duplicate installs.
+```
+
+Recall is exact-first, then similarity-based. Results come from the global personal
+store, even when another supported agent recorded the lesson.
+
+### 2. Evaluate a possible failure
+
+After something goes wrong, ask the agent to evaluate it:
+
+```text
+Evaluate whether this was a real failure. Do not record it if I only changed or
+clarified the requirement.
+```
+
+The evaluation distinguishes:
+
+- real failures;
+- requirement updates;
+- requirement clarifications;
+- preference updates;
+- mixed or uncertain feedback.
+
+Rejected and deferred evaluations remain auditable, but they do not become incidents or
+lessons.
+
+### 3. Review and record the lesson
+
+If the evaluation is accepted, ask the agent to complete the second review:
+
+```text
+Review this accepted failure against existing lessons. Reuse an exact match, propose a
+carefully generalized lesson when justified, or keep it distinct.
+```
+
+Then explicitly approve recording:
+
+```text
+Record the reviewed failure and proposed prevention lesson.
+```
+
+The plugin stores immutable incidents and versioned lessons. Existing history is
+preserved rather than overwritten.
+
+### 4. Give feedback on recalled lessons
+
+Recall feedback is important because it tells the memory which lessons actually help:
+
+```text
+That recalled lesson was useful and prevented the same failure. Record the outcome.
+```
+
+```text
+That lesson was a false positive for this task. Record that outcome.
+```
+
+Failure Memory stores append-only recall attempts, candidates, selections, outcomes,
+false positives, and missed-relevant feedback. It does not store raw recall prompts.
+
+### 5. Check health and learning metrics
+
+Example prompts:
+
+```text
+Check Failure Memory health and retrieval status.
+```
+
+```text
+Show recall feedback coverage, usefulness, false-positive, and missed-relevant metrics.
+```
+
+## Search modes
+
+Exact signature and SQLite FTS5 lexical search work without third-party dependencies.
+Optional semantic search uses local `sqlite-vec` and FastEmbed, and hybrid search fuses
+lexical and vector rankings.
+
+Semantic dependencies and the embedding model are installed only after explicit
+approval:
+
+```bash
 uv run failure-memory adapters plan
 uv run failure-memory adapters install
 uv run failure-memory index build
 ```
 
-The install command creates a private Python environment, installs
-`sqlite-vec==0.1.9`, `fastembed==0.8.0`, and `truststore==0.10.4`, downloads the
-configured embedding model into the adapter data tree using the native OS trust store,
-and validates the packages before writing a readiness marker. Setup disables Hugging Face
-telemetry and its optional Xet transfer path.
-Until that explicit command succeeds, semantic-only recall returns `setup_required` and
-hybrid recall degrades to FTS5. Nothing is installed or downloaded by an ordinary recall
-call.
+## Local data and privacy
 
-sqlite-vec provides exact brute-force KNN for semantic retrieval; SQL equality and joins
-remain regular SQLite operations, FTS5 provides lexical search, and Failure Memory fuses
-the two result lists in the application layer. The retrieval port is backend-neutral so
-Milvus, Qdrant, or another vector database can be added without changing the failure
-qualification model.
+Failure Memory is local-first. It does not require a hosted database or cloud account.
+The default global data root is:
 
-## Consolidate earlier stores
+- macOS: `~/Library/Application Support/failure-memory`
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/failure-memory`
+- Windows: `%LOCALAPPDATA%\FailureMemory`
 
-Version 0.3 uses one platform-global store. Earlier harness-local databases are never
-modified or deleted during consolidation:
+Back up the event-store database; indexes, models, and adapter environments can be
+rebuilt. Recognized credentials and private keys are redacted, but do not submit secrets,
+personal data, raw transcripts, or unnecessary private paths.
 
-```bash
-uv run failure-memory store discover
-uv run failure-memory store plan --source /absolute/path/to/failure-memory.sqlite3
-uv run failure-memory store import --source /absolute/path/to/failure-memory.sqlite3
-uv run failure-memory store verify --source /absolute/path/to/failure-memory.sqlite3
-```
-
-The importer opens the source read-only, fingerprints logical content, checks immutable
-identifier collisions before writing, copies the event graph in one transaction, and
-records an append-only import receipt. Repeating the same import is a no-op.
-
-Learning operations remain conservative:
-
-```bash
-uv run failure-memory lesson transition \
-  --lesson-id LESSON_ID --to-state verified --rationale-code reviewed
-uv run failure-memory learning experiment
-uv run failure-memory learning cluster --distance-threshold 0.2
-```
-
-Lifecycle transitions require review. Ranking experiments are shadow-only. Clustering
-requires the explicitly installed semantic adapter and produces proposals only.
-
-## Build and install host plugins from source
-
-Build the installable bundle from a reviewed Git checkout:
-
-```bash
-uv sync --extra dev
-uv run python packaging/build_codex.py
-```
-
-The bundle is written to `packaging/out/failure-memory`. If the Codex plugin validator is
-available in your installation, validate the bundle before installing it:
-
-```bash
-CODEX_SKILL_ROOT="${CODEX_HOME:-$HOME/.codex}/skills"
-python3 "$CODEX_SKILL_ROOT/.system/plugin-creator/scripts/validate_plugin.py" \
-  packaging/out/failure-memory
-```
-
-The bundle contains host manifests in `.codex-plugin`, `.plugin`, `.claude-plugin`, and
-`.cursor-plugin`. The same MCP server and skills are used by every projection. For Codex,
-add the built bundle to a local or personal marketplace. For the default personal
-marketplace, the install command is:
-
-```bash
-codex plugin add failure-memory@personal
-```
-
-GitHub Copilot CLI can install the bundle directly:
-
-```bash
-copilot plugin install /absolute/path/to/packaging/out/failure-memory
-```
-
-For repeatable local maintenance, first publish the reviewed bundle to the configured
-Codex marketplace source, then run the duplicate-safe host installer:
-
-```bash
-python3 scripts/install_harness.py \
-  --target codex --target copilot \
-  --bundle /absolute/path/to/bundle
-python3 scripts/install_harness.py \
-  --target codex --target copilot \
-  --bundle /absolute/path/to/bundle --apply
-```
-
-The first command is read-only. The second installs missing projections, updates an older
-single installation, reinstalls changed Copilot bundle content even when the semantic
-version is unchanged, and leaves an identical installation untouched. It fails closed if
-a host reports duplicate `failure-memory` identities. Installing or removing a projection
-never removes the platform-global database.
-
-Start a new host session after installation so it reloads the plugin's skills, hooks, and
-MCP server. See the official
-[plugin packaging documentation](https://developers.openai.com/plugins/build/plugins)
-for marketplace layouts and current installation options.
-
-Every host projection launches the same MCP/CLI core and uses the same global data-root
-resolution. Host variables supply provenance only; they never select a separate store.
-
-## Distribution status
-
-This repository supports source distribution and local Codex marketplace installation.
-It is not yet submitted to the universal public Plugins Directory.
-
-The bundled MCP server uses local stdio transport and local SQLite state. A universal
-directory submission that includes MCP would require a production, publicly reachable
-HTTPS MCP endpoint and the other materials described by the official
-[plugin submission guide](https://developers.openai.com/plugins/deploy/submission).
-A skills-only public submission is a separate option.
-
-## Runtime data and privacy
-
-Failure Memory never writes runtime data into the Git checkout or installed plugin.
-The global data root is resolved in this order:
-
-1. explicit `FAILURE_MEMORY_HOME`;
-2. the platform default:
-   - macOS: `~/Library/Application Support/failure-memory`;
-   - Windows: `%LOCALAPPDATA%/FailureMemory`;
-   - Linux: `$XDG_DATA_HOME/failure-memory`, falling back to
-     `~/.local/share/failure-memory`.
-
-Harness-specific `PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`, `COPILOT_PLUGIN_DATA`,
-`CURSOR_PLUGIN_DATA`, and similar locations do not select
-the active store. This prevents Codex, Claude, Cursor, Copilot, and other local clients
-from silently creating isolated memories. They may still be discovered as import sources.
-
-On POSIX systems, owned directories use mode `0700`; the identity key, database, WAL,
-and SHM files use `0600`. The service rejects unsafe symlinks, unexpected path types,
-inaccessible paths, and paths owned by another user.
-
-Authoritative and derived state are separated:
-
-```text
-<data-root>/adapters/event-store/sqlite/primary/failure-memory.sqlite3
-<data-root>/adapters/retrieval/sqlite-vec/global-v2/<profile>/index.sqlite3
-<data-root>/adapters/embedding/fastembed/<model-revision>/
-<data-root>/adapters/runtime/<lock-hash>/
-```
-
-Back up the event-store database. Retrieval indexes can be rebuilt from accepted lessons;
-adapter environments and models can be reinstalled from the pinned plan.
-
-Redaction is a defense-in-depth boundary, not a complete data-loss-prevention system. Do
-not submit secrets, personal data, raw transcripts, or unnecessary private paths. Health
-and metrics responses intentionally omit the absolute database path.
-
-## Package-builder safety
-
-`packaging/build_codex.py` uses held directory descriptors and atomic same-parent
-publication. It performs **no deletion**. A replaced output is retained as a private
-rollback sibling, and a failed publication reports exact recovery paths. Unresolved
-artifacts block later builds until a release operator inspects them.
-
-The builder supports macOS and Linux because it relies on their atomic no-replace and
-directory-exchange primitives. A hostile process running as the same user is outside its
-security boundary. The runtime service itself also contains Windows data-root and
-permission handling. After a replacement passes validation, obsolete retained artifacts
-may be moved to Trash or another recoverable quarantine location.
-
-## Development
-
-```bash
-uv sync --extra dev
-uv run pytest
-uv run pytest --cov=failure_memory --cov-report=term-missing
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
-uv build
-uv run python tools/render_skills.py --check
-```
-
-Contributor guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Security reporting
-instructions are in [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute and [SECURITY.md](SECURITY.md) to
+report a vulnerability.
 
 ## License
 

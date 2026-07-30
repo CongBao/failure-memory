@@ -1,0 +1,21 @@
+{
+  "name": "failure-memory",
+  "interface": {
+    "displayName": "Failure Memory"
+  },
+  "plugins": [
+    {
+      "name": "failure-memory",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/CongBao/failure-memory.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

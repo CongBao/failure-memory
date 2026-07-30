@@ -242,7 +242,7 @@ def test_cli_failure_reports_exact_recovery_paths_as_json_and_empty_stdout(
     assert detail["trust_anchor"] == str(output.parent)
 
 
-def test_builder_help_and_readme_state_the_recovery_boundary() -> None:
+def test_builder_help_and_contributor_guide_state_the_recovery_boundary() -> None:
     help_result = subprocess.run(
         [sys.executable, str(BUILDER), "--help"],
         cwd=REPOSITORY_ROOT,
@@ -252,7 +252,7 @@ def test_builder_help_and_readme_state_the_recovery_boundary() -> None:
     )
     surfaces = (
         help_result.stdout,
-        (REPOSITORY_ROOT / "README.md").read_text(),
+        (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(),
     )
     for surface in surfaces:
         normalized = surface.casefold()

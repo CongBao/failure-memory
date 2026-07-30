@@ -35,7 +35,56 @@ def test_host_manifests_share_one_identity_version_skills_and_mcp() -> None:
     assert {value["version"] for value in values} == {"0.4.0"}
     assert {value["skills"] for value in values} == {"./skills/"}
     assert {value["mcpServers"] for value in values} == {"./.mcp.json"}
+    assert {value["repository"] for value in values} == {
+        "https://github.com/CongBao/failure-memory"
+    }
+    assert {value["homepage"] for value in values} == {
+        "https://github.com/CongBao/failure-memory#readme"
+    }
     assert "FAILURE_MEMORY_HARNESS" not in (REPOSITORY / ".mcp.json").read_text(encoding="utf-8")
+
+
+def test_public_marketplaces_resolve_the_root_plugin() -> None:
+    codex = json.loads(
+        (REPOSITORY / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    claude = json.loads(
+        (REPOSITORY / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    copilot = json.loads(
+        (REPOSITORY / ".github" / "plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+
+    assert codex["name"] == "failure-memory"
+    assert codex["plugins"][0]["name"] == "failure-memory"
+    assert codex["plugins"][0]["source"] == {
+        "source": "url",
+        "url": "https://github.com/CongBao/failure-memory.git",
+        "ref": "main",
+    }
+
+    for marketplace in (claude, copilot):
+        assert marketplace["name"] == "failure-memory"
+        assert marketplace["plugins"][0]["name"] == "failure-memory"
+        assert marketplace["plugins"][0]["source"] == {
+            "source": "github",
+            "repo": "CongBao/failure-memory",
+            "ref": "main",
+        }
+
+
+def test_readme_documents_supported_host_install_paths() -> None:
+    readme = (REPOSITORY / "README.md").read_text(encoding="utf-8")
+
+    expected = (
+        "codex plugin marketplace add CongBao/failure-memory",
+        "codex plugin add failure-memory@failure-memory",
+        "claude plugin marketplace add CongBao/failure-memory",
+        "claude plugin install failure-memory@failure-memory",
+        "copilot plugin install CongBao/failure-memory",
+        "~/.cursor/plugins/local/failure-memory",
+    )
+    assert all(command in readme for command in expected)
 
 
 @pytest.mark.parametrize("harness", ["codex", "claude-code", "copilot", "cursor"])

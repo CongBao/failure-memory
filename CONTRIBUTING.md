@@ -54,8 +54,10 @@ uv run python packaging/build_codex.py
 uv run pytest tests/packaging
 ```
 
-The builder intentionally performs no deletion. Inspect and preserve any rollback or
-recovery path it reports.
+The builder performs no deletion. It retains replaced output as a recoverable rollback
+and reports unresolved artifacts instead of overwriting them.
+A release operator may move obsolete rollbacks to Trash after validation.
+A hostile process running as the same user is outside the builder's security boundary.
 
 ## Pull requests
 

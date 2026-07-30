@@ -7,6 +7,16 @@ use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Public GitHub marketplace catalogs for Codex, Claude Code, and GitHub Copilot CLI.
+
+### Changed
+
+- Reworked the README around the project's purpose, supported agents, installation, and
+  natural-language usage.
+- Added public repository and author metadata to every host plugin manifest.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added

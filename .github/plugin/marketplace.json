@@ -1,0 +1,35 @@
+{
+  "name": "failure-memory",
+  "owner": {
+    "name": "CongBao"
+  },
+  "metadata": {
+    "description": "Local, cross-agent memory for learning from real failures without treating requirement changes as mistakes.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "failure-memory",
+      "description": "Qualify real agent failures, preserve durable lessons locally, and recall recurrence-prevention guidance.",
+      "source": {
+        "source": "github",
+        "repo": "CongBao/failure-memory",
+        "ref": "main"
+      },
+      "author": {
+        "name": "CongBao",
+        "url": "https://github.com/CongBao"
+      },
+      "homepage": "https://github.com/CongBao/failure-memory#readme",
+      "repository": "https://github.com/CongBao/failure-memory",
+      "license": "MIT",
+      "keywords": [
+        "agent-memory",
+        "failure-learning",
+        "mcp",
+        "vector-search"
+      ],
+      "category": "Productivity"
+    }
+  ]
+}
