@@ -53,6 +53,9 @@ def _candidate(**changes: object) -> dict[str, object]:
 def _drafts(capture_attempt_id: str, **changes: object) -> dict[str, object]:
     arguments: dict[str, object] = {
         "capture_attempt_id": capture_attempt_id,
+        "generalization_review_id": "fgr_not_reviewed",
+        "disposition": "create_distinct",
+        "rationale_code": "test_rationale",
         "incident": {
             "outcome_summary": "The deployment was delayed.",
             "expected_invariant": "Migrations must run the preflight check.",
@@ -71,6 +74,21 @@ def _drafts(capture_attempt_id: str, **changes: object) -> dict[str, object]:
     }
     arguments.update(changes)
     return arguments
+
+
+def _reviewed_drafts(
+    service: FailureMemoryService, capture_attempt_id: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    arguments = _drafts(capture_attempt_id)
+    review_input = {
+        key: arguments[key] for key in ("capture_attempt_id", "incident", "lesson")
+    }
+    review = dispatch_tool("review_failure_recording", review_input, service)
+    _assert_envelope(review)
+    review_id = review["structuredContent"]["review_id"]
+    assert isinstance(review_id, str)
+    arguments["generalization_review_id"] = review_id
+    return arguments, review
 
 
 def _assert_envelope(result: dict[str, object]) -> None:
@@ -239,7 +257,8 @@ def test_recording_an_accepted_failure_returns_all_durable_identifiers(
     capture_attempt_id = evaluated["structuredContent"]["capture_attempt_id"]
     assert isinstance(capture_attempt_id, str)
 
-    result = dispatch_tool("record_failure_incident", _drafts(capture_attempt_id), service)
+    arguments, _review = _reviewed_drafts(service, capture_attempt_id)
+    result = dispatch_tool("record_failure_incident", arguments, service)
 
     _assert_envelope(result)
     payload = result["structuredContent"]
@@ -249,6 +268,7 @@ def test_recording_an_accepted_failure_returns_all_durable_identifiers(
         "lesson_version_id",
         "relation",
         "created_new_lesson",
+        "generalization_decision_id",
     }
     assert all(
         isinstance(payload[key], str) and payload[key] for key in payload if key.endswith("_id")
@@ -427,13 +447,13 @@ def test_every_success_payload_has_the_published_output_shape(
     evaluated = dispatch_tool("evaluate_failure_candidate", _candidate(), service)
     capture_attempt_id = evaluated["structuredContent"]["capture_attempt_id"]
     assert isinstance(capture_attempt_id, str)
-    recorded = dispatch_tool(
-        "record_failure_incident", _drafts(capture_attempt_id), service
-    )
+    record_arguments, reviewed = _reviewed_drafts(service, capture_attempt_id)
+    recorded = dispatch_tool("record_failure_incident", record_arguments, service)
     lesson_id = recorded["structuredContent"]["lesson_id"]
     assert isinstance(lesson_id, str)
     calls = {
         "evaluate_failure_candidate": evaluated,
+        "review_failure_recording": reviewed,
         "record_failure_incident": recorded,
         "find_related_failures": dispatch_tool(
             "find_related_failures",
@@ -485,7 +505,7 @@ def test_recall_and_false_positive_feedback_follow_published_contracts(
     assert isinstance(capture_attempt_id, str)
     recorded = dispatch_tool(
         "record_failure_incident",
-        _drafts(capture_attempt_id),
+        _reviewed_drafts(service, capture_attempt_id)[0],
         service,
     )
     lesson_version_id = recorded["structuredContent"]["lesson_version_id"]

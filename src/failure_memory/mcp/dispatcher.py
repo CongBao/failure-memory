@@ -17,6 +17,7 @@ from failure_memory.domain.records import (
     LessonDraft,
     LessonState,
     LessonVersionRecord,
+    RecordingDisposition,
 )
 from failure_memory.domain.retrieval import (
     RecallCandidate,
@@ -94,6 +95,7 @@ def dispatch_tool(
     if name not in {
         "evaluate_failure_candidate",
         "record_failure_incident",
+        "review_failure_recording",
         "find_related_failures",
         "recall_failure_lessons",
         "record_recall_outcome",
@@ -117,6 +119,8 @@ def dispatch_tool(
             return _evaluate(arguments, service)
         if name == "record_failure_incident":
             return _record(arguments, service)
+        if name == "review_failure_recording":
+            return _review_recording(arguments, service)
         if name == "find_related_failures":
             return _find_related(arguments, service)
         if name == "recall_failure_lessons":
@@ -215,8 +219,17 @@ def _evaluate(arguments: Mapping[str, object], service: FailureMemoryService) ->
 
 
 def _record(arguments: Mapping[str, object], service: FailureMemoryService) -> dict[str, object]:
-    record_keys = {"capture_attempt_id", "incident", "lesson"}
-    _validate_object(arguments, record_keys, record_keys, "arguments")
+    record_keys = {
+        "capture_attempt_id",
+        "generalization_review_id",
+        "disposition",
+        "target_lesson_version_id",
+        "rationale_code",
+        "incident",
+        "lesson",
+    }
+    required = record_keys - {"target_lesson_version_id"}
+    _validate_object(arguments, required, record_keys, "arguments")
     incident_arguments = _require_object(arguments, "incident")
     lesson_arguments = _require_object(arguments, "lesson")
     _validate_object(incident_arguments, _INCIDENT_KEYS, _INCIDENT_KEYS, "incident")
@@ -236,8 +249,21 @@ def _record(arguments: Mapping[str, object], service: FailureMemoryService) -> d
         applicability=_require_string(lesson_arguments, "applicability"),
         counterexamples=_require_string(lesson_arguments, "counterexamples"),
     )
+    disposition_value = _require_string(arguments, "disposition")
+    try:
+        disposition = RecordingDisposition(disposition_value)
+    except ValueError as exc:
+        raise BoundaryValidationError(
+            f"disposition has invalid value: {disposition_value}"
+        ) from exc
     result = service.record_failure_incident(
-        _require_string(arguments, "capture_attempt_id"), incident, lesson
+        _require_string(arguments, "capture_attempt_id"),
+        incident,
+        lesson,
+        generalization_review_id=_require_string(arguments, "generalization_review_id"),
+        disposition=disposition,
+        target_lesson_version_id=_optional_string(arguments, "target_lesson_version_id"),
+        rationale_code=_require_string(arguments, "rationale_code"),
     )
     return _success(
         {
@@ -246,8 +272,43 @@ def _record(arguments: Mapping[str, object], service: FailureMemoryService) -> d
             "lesson_version_id": result.lesson_version_id,
             "relation": result.relation.value,
             "created_new_lesson": result.created_new_lesson,
+            "generalization_decision_id": result.generalization_decision_id,
         },
         "Failure incident and lesson recorded.",
+    )
+
+
+def _review_recording(
+    arguments: Mapping[str, object], service: FailureMemoryService
+) -> dict[str, object]:
+    review_keys = {"capture_attempt_id", "incident", "lesson"}
+    _validate_object(arguments, review_keys, review_keys, "arguments")
+    incident_arguments = _require_object(arguments, "incident")
+    lesson_arguments = _require_object(arguments, "lesson")
+    _validate_object(incident_arguments, _INCIDENT_KEYS, _INCIDENT_KEYS, "incident")
+    _validate_object(lesson_arguments, _LESSON_KEYS, _LESSON_KEYS, "lesson")
+    incident = IncidentDraft(
+        outcome_summary=_require_string(incident_arguments, "outcome_summary"),
+        expected_invariant=_require_string(incident_arguments, "expected_invariant"),
+        controllable_cause=_require_string(incident_arguments, "controllable_cause"),
+        material_impact=_require_string(incident_arguments, "material_impact"),
+        recurrence_risk=_require_string(incident_arguments, "recurrence_risk"),
+    )
+    lesson = LessonDraft(
+        title=_require_string(lesson_arguments, "title"),
+        rule=_require_string(lesson_arguments, "rule"),
+        prevention_action=_require_string(lesson_arguments, "prevention_action"),
+        verification_action=_require_string(lesson_arguments, "verification_action"),
+        applicability=_require_string(lesson_arguments, "applicability"),
+        counterexamples=_require_string(lesson_arguments, "counterexamples"),
+    )
+    return _success(
+        dict(
+            service.review_failure_recording(
+                _require_string(arguments, "capture_attempt_id"), incident, lesson
+            )
+        ),
+        "Failure recording generalization review completed.",
     )
 
 

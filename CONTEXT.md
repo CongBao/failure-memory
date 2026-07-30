@@ -28,6 +28,16 @@ A reviewable suggestion that multiple lessons support a broader lesson while pre
 every source incident and lesson.
 _Avoid_: Automatic merge, canonical truth
 
+**Generalization Review**:
+The required second-tier decision after a real failure is accepted: reuse an exact lesson,
+reuse or broaden a reviewed related lesson, create a distinct lesson, or defer recording.
+_Avoid_: Duplicate check, automatic deduplication
+
+**Harness Projection**:
+A host-specific manifest, skill, MCP, and hook view over the shared core and Global Personal
+Memory; it never owns a separate memory store.
+_Avoid_: Harness database, Codex store, Copilot store
+
 **Proposed Caution**:
 A recalled lesson offered for validation against the current task, not verified policy.
 _Avoid_: Rule, mandate

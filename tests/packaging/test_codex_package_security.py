@@ -18,7 +18,10 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BUILDER_RELATIVE = Path("packaging/build_codex.py")
 INSTALLABLE_INPUTS = (
+    Path(".claude-plugin"),
     Path(".codex-plugin"),
+    Path(".cursor-plugin"),
+    Path(".plugin"),
     Path(".mcp.json"),
     Path(".gitignore"),
     Path("CHANGELOG.md"),
@@ -26,6 +29,7 @@ INSTALLABLE_INPUTS = (
     Path("LICENSE"),
     Path("README.md"),
     Path("SECURITY.md"),
+    Path("hooks"),
     Path("scripts"),
     Path("skills"),
     Path("src"),
@@ -168,10 +172,9 @@ def test_allow_dirty_omits_a_tracked_file_deleted_from_the_worktree(
     tmp_path: Path,
 ) -> None:
     repository = _fixture_repository(tmp_path)
-    optional_document = repository / "docs" / "optional.md"
-    optional_document.parent.mkdir()
+    optional_document = repository / "skills" / "optional.md"
     optional_document.write_text("optional public documentation\n")
-    _git(repository, "add", "docs/optional.md")
+    _git(repository, "add", "skills/optional.md")
     _git(repository, "commit", "-m", "add optional documentation")
     optional_document.unlink()
     output = tmp_path / "private-publish" / "failure-memory"
@@ -179,7 +182,7 @@ def test_allow_dirty_omits_a_tracked_file_deleted_from_the_worktree(
     completed = _run_builder(repository, output, allow_dirty=True)
 
     assert completed.returncode == 0, completed.stderr
-    assert not (output / "docs" / "optional.md").exists()
+    assert not (output / "skills" / "optional.md").exists()
 
 
 def test_group_writable_output_parent_is_rejected(
@@ -1923,7 +1926,11 @@ def test_clean_build_ignores_unsafe_live_chmod_and_normalizes_bundle_modes(
     assert stat.S_IMODE((output / "scripts/failure_memory_mcp.py").stat().st_mode) == 0o755
     for path in output.rglob("*"):
         expected = 0o755 if path.is_dir() else 0o644
-        if path.relative_to(output).as_posix() == "scripts/failure_memory_mcp.py":
+        if path.relative_to(output).as_posix() in {
+            "scripts/failure_memory_hook.py",
+            "scripts/failure_memory_mcp.py",
+            "scripts/install_harness.py",
+        }:
             expected = 0o755
         assert stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) == expected
         assert path.stat(follow_symlinks=False).st_uid == os.getuid()

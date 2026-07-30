@@ -12,6 +12,8 @@ from failure_memory.domain.capture import (
 )
 from failure_memory.domain.learning import (
     ClusterRunResult,
+    GeneralizationRecommendation,
+    GeneralizationReview,
     LessonCluster,
     LessonTransition,
     RankingExperimentResult,
@@ -21,6 +23,7 @@ from failure_memory.domain.records import (
     LessonDraft,
     LessonState,
     LessonVersionRecord,
+    RecordingDisposition,
     RecordResult,
 )
 from failure_memory.domain.retrieval import (
@@ -53,7 +56,26 @@ class EventStorePort(Protocol):
         *,
         created_at: datetime,
         redaction_state: str,
+        generalization_review_id: str | None = None,
+        disposition: RecordingDisposition | None = None,
+        target_lesson_version_id: str | None = None,
+        rationale_code: str | None = None,
     ) -> RecordResult: ...
+
+    def append_generalization_review(
+        self,
+        capture_attempt_id: str,
+        proposed_signature: str,
+        recommendation: GeneralizationRecommendation,
+        retrieval_profile: str,
+        candidate_lesson_version_ids: Sequence[str],
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> GeneralizationReview: ...
+
+    def get_generalization_review(self, review_id: str) -> GeneralizationReview: ...
 
     def find_lesson_by_signature(
         self,

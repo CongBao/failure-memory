@@ -1,8 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from failure_memory.domain.records import LessonState, LessonVersionRecord
+
+
+class GeneralizationRecommendation(StrEnum):
+    REUSE_EXACT = "reuse_exact"
+    REVIEW_RELATED = "review_related"
+    CREATE_DISTINCT = "create_distinct"
+
+
+@dataclass(frozen=True, slots=True)
+class GeneralizationReview:
+    id: str
+    capture_attempt_id: str
+    proposed_signature: str
+    recommendation: GeneralizationRecommendation
+    retrieval_profile: str
+    candidate_lesson_version_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

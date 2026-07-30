@@ -7,7 +7,6 @@
       ],
       "cwd": ".",
       "env": {
-        "FAILURE_MEMORY_HARNESS": "codex",
         "PYTHONDONTWRITEBYTECODE": "1"
       },
       "startup_timeout_sec": 10,

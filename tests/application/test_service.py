@@ -546,9 +546,10 @@ def test_setup_status_matches_the_bootstrap_capability_contract(
             "copy_only_store_import",
             "recall_telemetry",
             "learning_metrics",
+            "tier_two_generalization_review",
+            "bounded_session_hook",
         ],
         "unavailable_capabilities": [
-            "prompt_hook",
             "production_feedback_ranking",
             "fts5_recall",
             "semantic_recall",

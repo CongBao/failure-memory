@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPOSITORY = Path(__file__).resolve().parents[2]
+
+
+def _installer_module() -> object:
+    path = REPOSITORY / "scripts" / "install_harness.py"
+    spec = importlib.util.spec_from_file_location("failure_memory_install_harness_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_host_manifests_share_one_identity_version_skills_and_mcp() -> None:
+    manifests = [
+        REPOSITORY / ".codex-plugin" / "plugin.json",
+        REPOSITORY / ".claude-plugin" / "plugin.json",
+        REPOSITORY / ".plugin" / "plugin.json",
+        REPOSITORY / ".cursor-plugin" / "plugin.json",
+    ]
+    values = [json.loads(path.read_text(encoding="utf-8")) for path in manifests]
+
+    assert {value["name"] for value in values} == {"failure-memory"}
+    assert {value["version"] for value in values} == {"0.4.0"}
+    assert {value["skills"] for value in values} == {"./skills/"}
+    assert {value["mcpServers"] for value in values} == {"./.mcp.json"}
+    assert "FAILURE_MEMORY_HARNESS" not in (REPOSITORY / ".mcp.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code", "copilot", "cursor"])
+def test_session_hook_emits_bounded_guidance_without_creating_state(
+    tmp_path: Path, harness: str
+) -> None:
+    script = REPOSITORY / "scripts" / "failure_memory_hook.py"
+    environment = {**os.environ, "HOME": str(tmp_path)}
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--harness",
+            harness,
+            "--event",
+            "session-start",
+        ],
+        input=json.dumps({"session_id": "test", "prompt": "must not persist"}),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert len(completed.stdout) < 1_500
+    assert "must not persist" not in completed.stdout
+    assert "Failure Memory" in completed.stdout
+    assert list(tmp_path.rglob("*")) == []
+    assert isinstance(payload, dict)
+
+
+def test_installer_detects_stable_versions_and_duplicate_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    outputs = {
+        "codex": (
+            "PLUGIN  STATUS  VERSION  PATH\n"
+            "failure-memory@personal  installed, enabled  0.4.0+codex.1  /plugin\n"
+        ),
+        "copilot": (
+            "Installed plugins:\n  • failure-memory (v0.4.0)\n  • failure-memory@other (v0.3.0)\n"
+        ),
+    }
+
+    monkeypatch.setattr(
+        installer,
+        "_run",
+        lambda executable, *_arguments: outputs[
+            "codex" if executable.endswith("codex") else "copilot"
+        ],
+    )
+
+    assert installer._installed_versions("codex", "/usr/bin/codex") == ("0.4.0+codex.1",)
+    assert installer._installed_versions("copilot", "/usr/bin/copilot") == (
+        "0.4.0",
+        "0.3.0",
+    )

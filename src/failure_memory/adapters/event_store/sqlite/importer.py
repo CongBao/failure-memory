@@ -17,6 +17,7 @@ _CORE_TABLES = (
     "lesson_version",
     "lesson_head",
     "incident_lesson_relation",
+    "lesson_signature_alias",
     "adapter_profile",
     "adapter_health_event",
 )
@@ -34,6 +35,8 @@ _LEARNING_TABLES = (
     "lesson_cluster_run",
     "lesson_cluster_member",
     "lesson_generalization_proposal",
+    "failure_generalization_review",
+    "failure_generalization_decision_event",
 )
 _TABLES = (*_CORE_TABLES, *_RECALL_TABLES, *_LEARNING_TABLES)
 

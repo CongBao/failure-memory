@@ -73,6 +73,9 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
     paths = _bundle_paths(output)
     required = {
         ".codex-plugin/plugin.json",
+        ".claude-plugin/plugin.json",
+        ".cursor-plugin/plugin.json",
+        ".plugin/plugin.json",
         ".mcp.json",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
@@ -80,6 +83,8 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
         "README.md",
         "SECURITY.md",
         "scripts/failure_memory_mcp.py",
+        "scripts/failure_memory_hook.py",
+        "scripts/install_harness.py",
         "skills/record-agent-failure/SKILL.md",
         "skills/record-agent-failure/contract.json",
         "skills/recall-failure-lessons/SKILL.md",
@@ -117,14 +122,23 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
     assert set(inventory) == expected_hashed_paths
     for relative in expected_hashed_paths:
         entry = inventory[relative]
+        executable = relative in {
+            "scripts/failure_memory_hook.py",
+            "scripts/failure_memory_mcp.py",
+            "scripts/install_harness.py",
+        }
         assert entry == {
             "sha256": hashlib.sha256((output / relative).read_bytes()).hexdigest(),
-            "mode": "0755" if relative == "scripts/failure_memory_mcp.py" else "0644",
+            "mode": "0755" if executable else "0644",
         }
 
     for path in output.rglob("*"):
         expected_mode = 0o755 if path.is_dir() else 0o644
-        if path.relative_to(output).as_posix() == "scripts/failure_memory_mcp.py":
+        if path.relative_to(output).as_posix() in {
+            "scripts/failure_memory_hook.py",
+            "scripts/failure_memory_mcp.py",
+            "scripts/install_harness.py",
+        }:
             expected_mode = 0o755
         assert path.stat(follow_symlinks=False).st_mode & 0o777 == expected_mode
         assert path.stat(follow_symlinks=False).st_uid == os.getuid()
@@ -134,10 +148,7 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
     assert server["command"] == "python3"
     assert server["args"] == ["scripts/failure_memory_mcp.py"]
     assert server["cwd"] == "."
-    assert server["env"] == {
-        "FAILURE_MEMORY_HARNESS": "codex",
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
+    assert server["env"] == {"PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def test_dirty_tree_requires_opt_in_and_includes_only_nonignored_untracked_files(
@@ -231,7 +242,7 @@ def test_cli_failure_reports_exact_recovery_paths_as_json_and_empty_stdout(
     assert detail["trust_anchor"] == str(output.parent)
 
 
-def test_builder_help_and_security_document_state_the_recovery_boundary() -> None:
+def test_builder_help_and_readme_state_the_recovery_boundary() -> None:
     help_result = subprocess.run(
         [sys.executable, str(BUILDER), "--help"],
         cwd=REPOSITORY_ROOT,
@@ -239,13 +250,9 @@ def test_builder_help_and_security_document_state_the_recovery_boundary() -> Non
         capture_output=True,
         text=True,
     )
-    security_document = REPOSITORY_ROOT / "docs" / "packaging-security.md"
-
-    assert security_document.is_file()
     surfaces = (
         help_result.stdout,
         (REPOSITORY_ROOT / "README.md").read_text(),
-        security_document.read_text(),
     )
     for surface in surfaces:
         normalized = surface.casefold()
@@ -314,6 +321,7 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
     tool_names = [tool["name"] for tool in responses[1]["result"]["tools"]]
     assert tool_names == [
         "evaluate_failure_candidate",
+        "review_failure_recording",
         "record_failure_incident",
         "find_related_failures",
         "recall_failure_lessons",
@@ -330,7 +338,7 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
         "failure_memory_setup_status",
         "failure_memory_doctor",
     ]
-    assert len(tool_names) == len(set(tool_names)) == 16
+    assert len(tool_names) == len(set(tool_names)) == 17
     doctor = responses[2]["result"]["structuredContent"]
     assert doctor["state"] == "lexical_ready"
     assert doctor["integrity_check"] == "ok"

@@ -11,7 +11,11 @@ from failure_memory.domain.capture import (
     ExpectationSource,
     ReasonCode,
 )
-from failure_memory.domain.records import IncidentLessonRelation, LessonState
+from failure_memory.domain.records import (
+    IncidentLessonRelation,
+    LessonState,
+    RecordingDisposition,
+)
 from failure_memory.domain.retrieval import RecallMode, RecallOutcomeKind, RecallStatus
 from failure_memory.mcp.rfc3339 import RFC3339_DATE_TIME_PATTERN
 
@@ -107,8 +111,16 @@ def _record_output_schema() -> Schema:
                 "enum": [member.value for member in IncidentLessonRelation],
             },
             "created_new_lesson": {"type": "boolean"},
+            "generalization_decision_id": _DRAFT_STRING,
         },
-        ["incident_id", "lesson_id", "lesson_version_id", "relation", "created_new_lesson"],
+        [
+            "incident_id",
+            "lesson_id",
+            "lesson_version_id",
+            "relation",
+            "created_new_lesson",
+            "generalization_decision_id",
+        ],
     )
 
 
@@ -136,7 +148,13 @@ def _counts_schema() -> Schema:
             "lesson_version": {"type": "integer", "minimum": 0},
             "incident_lesson_relation": {"type": "integer", "minimum": 0},
         },
-        ["capture_attempt", "incident", "lesson", "lesson_version", "incident_lesson_relation"],
+        [
+            "capture_attempt",
+            "incident",
+            "lesson",
+            "lesson_version",
+            "incident_lesson_relation",
+        ],
     )
 
 
@@ -451,8 +469,11 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
         annotations=_annotations(read_only=False),
     ),
     ToolDefinition(
-        name="record_failure_incident",
-        description="Record an incident and proposed lesson for an accepted failure capture.",
+        name="review_failure_recording",
+        description=(
+            "Run the required second-tier exact and similarity review before recording "
+            "an accepted failure; this never merges lessons automatically."
+        ),
         input_schema=_object_schema(
             {
                 "capture_attempt_id": _DRAFT_STRING,
@@ -460,6 +481,104 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
                 "lesson": _object_schema(_LESSON_DRAFT_PROPERTIES, _LESSON_DRAFT_REQUIRED),
             },
             ["capture_attempt_id", "incident", "lesson"],
+        ),
+        output_schema=_tool_output_schema(
+            _object_schema(
+                {
+                    "review_id": _DRAFT_STRING,
+                    "recommendation": {
+                        "type": "string",
+                        "enum": [
+                            "reuse_exact",
+                            "review_related",
+                            "create_distinct",
+                        ],
+                    },
+                    "retrieval_profile": _DRAFT_STRING,
+                    "automatic_merge": {"type": "boolean", "const": False},
+                    "candidates": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": _object_schema(
+                            {
+                                "lesson_version_id": _DRAFT_STRING,
+                                "lesson_id": _DRAFT_STRING,
+                                "title": _DRAFT_STRING,
+                                "rule": _DRAFT_STRING,
+                                "prevention_action": _DRAFT_STRING,
+                                "verification_action": _DRAFT_STRING,
+                                "applicability": _DRAFT_STRING,
+                                "counterexamples": _DRAFT_STRING,
+                                "expected_invariant": _DRAFT_STRING,
+                                "controllable_cause": _DRAFT_STRING,
+                                "channels": {
+                                    "type": "array",
+                                    "items": _DRAFT_STRING,
+                                },
+                                "score": {"type": "number"},
+                                "exact": {"type": "boolean"},
+                                "lifecycle_state": {
+                                    "type": "string",
+                                    "enum": [member.value for member in LessonState],
+                                },
+                            },
+                            [
+                                "lesson_version_id",
+                                "lesson_id",
+                                "title",
+                                "rule",
+                                "prevention_action",
+                                "verification_action",
+                                "applicability",
+                                "counterexamples",
+                                "expected_invariant",
+                                "controllable_cause",
+                                "channels",
+                                "score",
+                                "exact",
+                                "lifecycle_state",
+                            ],
+                        ),
+                    },
+                },
+                [
+                    "review_id",
+                    "recommendation",
+                    "retrieval_profile",
+                    "automatic_merge",
+                    "candidates",
+                ],
+            )
+        ),
+        annotations=_annotations(read_only=False, idempotent=False),
+    ),
+    ToolDefinition(
+        name="record_failure_incident",
+        description=(
+            "Record an accepted failure only after an explicit generalization review "
+            "and disposition."
+        ),
+        input_schema=_object_schema(
+            {
+                "capture_attempt_id": _DRAFT_STRING,
+                "generalization_review_id": _DRAFT_STRING,
+                "disposition": {
+                    "type": "string",
+                    "enum": [member.value for member in RecordingDisposition],
+                },
+                "target_lesson_version_id": _DRAFT_STRING,
+                "rationale_code": _DRAFT_STRING,
+                "incident": _object_schema(_INCIDENT_PROPERTIES, _INCIDENT_REQUIRED),
+                "lesson": _object_schema(_LESSON_DRAFT_PROPERTIES, _LESSON_DRAFT_REQUIRED),
+            },
+            [
+                "capture_attempt_id",
+                "generalization_review_id",
+                "disposition",
+                "rationale_code",
+                "incident",
+                "lesson",
+            ],
         ),
         output_schema=_tool_output_schema(_record_output_schema()),
         annotations=_annotations(read_only=False),
@@ -578,8 +697,7 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
     ToolDefinition(
         name="build_failure_memory_index",
         description=(
-            "Idempotently synchronize the rebuildable retrieval index from accepted "
-            "global lessons."
+            "Idempotently synchronize the rebuildable retrieval index from accepted global lessons."
         ),
         input_schema=_object_schema({}, []),
         output_schema=_tool_output_schema(
@@ -691,9 +809,7 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
     ),
     ToolDefinition(
         name="propose_failure_lesson_clusters",
-        description=(
-            "Append proposal-only semantic lesson clusters with source IDs and no merge."
-        ),
+        description=("Append proposal-only semantic lesson clusters with source IDs and no merge."),
         input_schema=_object_schema(
             {
                 "distance_threshold": {

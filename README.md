@@ -9,7 +9,8 @@ global store is shared by trusted local harnesses; harness, workspace, and sessi
 are retained as origin metadata rather than used as retrieval boundaries. The current
 release includes a dependency-free SQLite event store, exact and FTS5 recall, optional
 local sqlite-vec/FastEmbed semantic search, append-only learning telemetry, a JSON CLI,
-an MCP server, and a Codex plugin with separate recording and recall skills.
+an MCP server, and plugin projections for Codex, Claude Code, GitHub Copilot, and Cursor
+with separate recording and recall skills.
 
 ## Why this exists
 
@@ -22,8 +23,9 @@ Failure Memory applies two gates:
 
 1. **Qualification:** Was there a prior expectation, an observable mismatch, material
    impact or recurrence risk, a controllable cause, and a durable prevention lesson?
-2. **Reuse:** Does the accepted incident match an existing lesson's exact invariant,
-   cause, and prevention signature?
+2. **Generalization review:** Does the accepted incident exactly match an existing
+   lesson, fit a reviewed related lesson, support a broader proposed lesson, or need a
+   distinct lesson?
 
 Rejected and deferred evaluations remain auditable capture attempts, but they do not
 become incidents or lessons.
@@ -34,8 +36,10 @@ become incidents or lessons.
   `real_failure`, `mixed`, and `uncertain` feedback.
 - Requires evaluation before any incident write.
 - Stores immutable incidents and versioned proposed lessons in SQLite.
-- Reuses a lesson only when its normalized invariant, cause, and prevention action match
-  exactly.
+- Requires a second-tier exact and bounded similarity review before the public recording
+  tool can write an accepted failure.
+- Requires exact reuse and records an explicit rationale for reviewed reuse,
+  generalization, or distinct creation; similarity never decides by itself.
 - Redacts recognized credential, bearer-token, and private-key patterns before storage.
 - Performs global FTS5 lexical recall and optional exact cosine KNN with sqlite-vec.
 - Fuses lexical and vector rankings with reciprocal-rank fusion while preserving exact
@@ -50,13 +54,17 @@ become incidents or lessons.
 - Runs feedback ranking only as recorded shadow experiments and creates semantic
   generalization proposals without activating ranking changes or merging lessons.
 - Plans, verifies, and performs idempotent copy-only imports from earlier local stores.
-- Exposes sixteen schema-validated MCP tools with accurate read/write annotations.
-- Provides separate Codex skills for recording failures and recalling lessons.
+- Exposes seventeen schema-validated MCP tools with accurate read/write annotations.
+- Provides the same separate recording and recall skills to Codex, Claude Code, GitHub
+  Copilot, and Cursor.
+- Ships bounded session-start hooks that add only static workflow guidance; hooks never
+  persist prompts, query memory, or record lessons.
+- Includes a duplicate-safe installer that detects stable host plugin identities and
+  chooses install, update, or no-op.
 - Keeps runtime state outside the source checkout and plugin installation.
 
-Automatic hooks, production feedback ranking, and additional vector-store and
-agent-harness packages are tracked in the [roadmap](docs/roadmap.md). Similarity never
-merges or reuses lessons automatically.
+Production feedback ranking and additional vector-store adapters remain future work.
+Similarity never merges or reuses lessons automatically.
 
 ## Requirements
 
@@ -84,13 +92,14 @@ uv run failure-memory index status
 ```
 
 Commands emit one JSON object on standard output. Diagnostics use standard error.
-`evaluate`, `record`, `recall`, and `feedback` accept one JSON object from a file or
+`evaluate`, `review`, `record`, `recall`, and `feedback` accept one JSON object from a file or
 standard input:
 
 ```bash
 uv run failure-memory evaluate --input candidate.json
 uv run failure-memory evaluate --input - < candidate.json
 
+uv run failure-memory review --input accepted-incident.json
 uv run failure-memory record --input accepted-incident.json
 uv run failure-memory record --input - < accepted-incident.json
 
@@ -98,8 +107,10 @@ uv run failure-memory recall --input recall-query.json
 uv run failure-memory feedback --input recall-outcome.json
 ```
 
-An accepted evaluation returns a `capture_attempt_id`. Pass that identifier to `record`;
-rejected or deferred captures cannot be recorded.
+An accepted evaluation returns a `capture_attempt_id`. Pass that identifier and the
+sanitized drafts to `review`; then pass the returned `review_id`, an explicit disposition,
+rationale, and the unchanged drafts to `record`. Rejected or deferred captures cannot be
+reviewed or recorded.
 
 ## Retrieval profiles
 
@@ -163,7 +174,7 @@ uv run failure-memory learning cluster --distance-threshold 0.2
 Lifecycle transitions require review. Ranking experiments are shadow-only. Clustering
 requires the explicitly installed semantic adapter and produces proposals only.
 
-## Install the Codex plugin from source
+## Build and install host plugins from source
 
 Build the installable bundle from a reviewed Git checkout:
 
@@ -181,21 +192,45 @@ python3 "$CODEX_SKILL_ROOT/.system/plugin-creator/scripts/validate_plugin.py" \
   packaging/out/failure-memory
 ```
 
-Use Codex's built-in `$plugin-creator` workflow to add the built bundle to a local or
-personal marketplace, then install it from that marketplace. For the default personal
+The bundle contains host manifests in `.codex-plugin`, `.plugin`, `.claude-plugin`, and
+`.cursor-plugin`. The same MCP server and skills are used by every projection. For Codex,
+add the built bundle to a local or personal marketplace. For the default personal
 marketplace, the install command is:
 
 ```bash
 codex plugin add failure-memory@personal
 ```
 
-Start a new Codex task after installation so the host reloads the plugin's skills and MCP
-server. See the official
+GitHub Copilot CLI can install the bundle directly:
+
+```bash
+copilot plugin install /absolute/path/to/packaging/out/failure-memory
+```
+
+For repeatable local maintenance, first publish the reviewed bundle to the configured
+Codex marketplace source, then run the duplicate-safe host installer:
+
+```bash
+python3 scripts/install_harness.py \
+  --target codex --target copilot \
+  --bundle /absolute/path/to/bundle
+python3 scripts/install_harness.py \
+  --target codex --target copilot \
+  --bundle /absolute/path/to/bundle --apply
+```
+
+The first command is read-only. The second installs missing projections, updates an older
+single installation, and leaves an identical installation unchanged. It fails closed if a
+host reports duplicate `failure-memory` identities. Installing or removing a projection
+never removes the platform-global database.
+
+Start a new host session after installation so it reloads the plugin's skills, hooks, and
+MCP server. See the official
 [plugin packaging documentation](https://developers.openai.com/plugins/build/plugins)
 for marketplace layouts and current installation options.
 
-The shared MCP/CLI integration contract and rules for future Claude, Cursor, Copilot, and
-other projections are documented in [harness integrations](docs/harnesses.md).
+Every host projection launches the same MCP/CLI core and uses the same global data-root
+resolution. Host variables supply provenance only; they never select a separate store.
 
 ## Distribution status
 
@@ -220,7 +255,8 @@ The global data root is resolved in this order:
    - Linux: `$XDG_DATA_HOME/failure-memory`, falling back to
      `~/.local/share/failure-memory`.
 
-Harness-specific `PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`, and similar locations do not select
+Harness-specific `PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`, `COPILOT_PLUGIN_DATA`,
+`CURSOR_PLUGIN_DATA`, and similar locations do not select
 the active store. This prevents Codex, Claude, Cursor, Copilot, and other local clients
 from silently creating isolated memories. They may still be discovered as import sources.
 
@@ -244,8 +280,6 @@ Redaction is a defense-in-depth boundary, not a complete data-loss-prevention sy
 not submit secrets, personal data, raw transcripts, or unnecessary private paths. Health
 and metrics responses intentionally omit the absolute database path.
 
-See [operations](docs/operations.md) for backup, recovery, retention, and troubleshooting.
-
 ## Package-builder safety
 
 `packaging/build_codex.py` uses held directory descriptors and atomic same-parent
@@ -258,8 +292,6 @@ directory-exchange primitives. A hostile process running as the same user is out
 security boundary. The runtime service itself also contains Windows data-root and
 permission handling. After a replacement passes validation, obsolete retained artifacts
 may be moved to Trash or another recoverable quarantine location.
-
-See [package-builder security](docs/packaging-security.md) for the full boundary.
 
 ## Development
 

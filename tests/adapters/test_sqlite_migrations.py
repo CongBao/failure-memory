@@ -32,7 +32,7 @@ def close_migration_test_connections(
 
 def test_initial_migration_creates_core_tables_and_is_idempotent(tmp_path: Path) -> None:
     connection = connect_sqlite(tmp_path / "failure-memory.sqlite3")
-    assert apply_migrations(connection) == (1, 2, 3, 4)
+    assert apply_migrations(connection) == (1, 2, 3, 4, 5)
     assert apply_migrations(connection) == ()
     tables = {
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -45,6 +45,9 @@ def test_initial_migration_creates_core_tables_and_is_idempotent(tmp_path: Path)
         "lesson_version",
         "lesson_head",
         "incident_lesson_relation",
+        "lesson_signature_alias",
+        "failure_generalization_review",
+        "failure_generalization_decision_event",
         "adapter_profile",
         "adapter_health_event",
     } <= tables
@@ -82,7 +85,7 @@ def test_pending_migration_retries_busy_transaction_without_partial_schema(
         "_migration_files",
         lambda: [
             *migrations,
-            (5, "0005_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
+            (6, "0006_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
         ],
     )
     writer.execute("PRAGMA busy_timeout = 1")
@@ -103,7 +106,7 @@ def test_pending_migration_retries_busy_transaction_without_partial_schema(
         is None
     )
     assert (
-        writer.execute("SELECT version FROM schema_migration WHERE version = 5").fetchone() is None
+        writer.execute("SELECT version FROM schema_migration WHERE version = 6").fetchone() is None
     )
     writer.close()
 
@@ -385,9 +388,9 @@ def test_concurrent_initial_migration_is_applied_once(
         allow_first_migration.set()
         results = [first.result(), second.result()]
 
-    assert sorted(results) == [(), (1, 2, 3, 4)]
+    assert sorted(results) == [(), (1, 2, 3, 4, 5)]
     connection = connect_sqlite(database_path)
-    assert connection.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 4
+    assert connection.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 5
     assert (
         connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'capture_attempt'"

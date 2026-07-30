@@ -215,7 +215,7 @@ def _evidence_errors(root: Path, renderer_path: Path) -> list[str]:
         errors.append("results_sha256")
 
     expected_families = {
-        "record-agent-failure": (["R1", "R2", "R3"], {"passed": 15, "total": 15}),
+        "record-agent-failure": (["R1", "R2", "R3", "R4"], {"passed": 4, "total": 4}),
         "recall-failure-lessons": (["C1", "C2", "C3"], {"passed": 3, "total": 3}),
     }
     for skill, (families, final_qualifying) in expected_families.items():
@@ -378,7 +378,8 @@ def test_contracts_represent_all_required_record_and_recall_rules() -> None:
     assert record["result_reporting"] == {
         "distinguish": [
             "created_new_proposed_lesson",
-            "reused_exact_existing_lesson",
+            "reused_existing_lesson",
+            "generalized_existing_lesson",
         ],
         "cite_returned_identifiers": True,
         "allow_verified_description": False,

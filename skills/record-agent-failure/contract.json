@@ -1,5 +1,5 @@
 {
-  "contract_version": 2,
+  "contract_version": 3,
   "policy_kind": "record_failure",
   "skill": {
     "name": "record-agent-failure",
@@ -65,12 +65,14 @@
     },
     "tools": {
       "evaluate": "evaluate_failure_candidate",
+      "review": "review_failure_recording",
       "record": "record_failure_incident"
     },
     "workflow": {
       "entry": "classify",
       "tool_order": [
         "evaluate_failure_candidate",
+        "review_failure_recording",
         "record_failure_incident"
       ],
       "edges": [
@@ -81,10 +83,16 @@
           "condition": "always"
         },
         {
-          "id": "evaluate_accept_to_record",
+          "id": "evaluate_accept_to_review",
           "from": "evaluate",
-          "to": "record",
+          "to": "review",
           "condition": "decision == accept"
+        },
+        {
+          "id": "review_to_record",
+          "from": "review",
+          "to": "record",
+          "condition": "explicit disposition selected"
         },
         {
           "id": "evaluate_reject_defer_to_terminal",
@@ -133,7 +141,7 @@
       "shared_topic_converts_new_work": false,
       "urgency_converts_new_work": false,
       "authority_converts_new_work": false,
-      "intended_call_format": "evaluate_then_record_only_if_accept_otherwise_no_write",
+      "intended_call_format": "evaluate_then_review_then_record_only_if_accept_otherwise_no_write",
       "unconditioned_record_listing_allowed": false
     },
     "accepted_capture": {
@@ -145,10 +153,24 @@
       "record_capture_id_state": "accepted",
       "record_drafts_sanitized": true
     },
+    "generalization_review": {
+      "required_before_record": true,
+      "candidate_limit": 3,
+      "automatic_merge": false,
+      "allowed_dispositions": [
+        "reuse_existing",
+        "generalize_existing",
+        "create_distinct"
+      ],
+      "exact_reuse_required": true,
+      "rationale_code_required": true,
+      "defer_if_fit_is_uncertain": true
+    },
     "result_reporting": {
       "distinguish": [
         "created_new_proposed_lesson",
-        "reused_exact_existing_lesson"
+        "reused_existing_lesson",
+        "generalized_existing_lesson"
       ],
       "cite_returned_identifiers": true,
       "allow_verified_description": false

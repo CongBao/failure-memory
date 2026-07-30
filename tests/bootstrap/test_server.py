@@ -294,9 +294,10 @@ def test_tools_list_returns_all_immutable_tools_after_initialize() -> None:
 
     assert response is not None
     tools = cast(dict[str, list[dict[str, object]]], response["result"])["tools"]
-    assert len(tools) == 16
+    assert len(tools) == 17
     assert {tool["name"] for tool in tools} == {
         "evaluate_failure_candidate",
+        "review_failure_recording",
         "record_failure_incident",
         "find_related_failures",
         "recall_failure_lessons",
@@ -712,7 +713,7 @@ def test_create_local_service_maps_pending_migration_contention_to_busy(
         "_migration_files",
         lambda: [
             *migrations,
-            (5, "0005_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
+            (6, "0006_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
         ],
     )
     real_connect = service_module.connect_sqlite

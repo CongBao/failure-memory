@@ -8,6 +8,7 @@ import pytest
 from failure_memory.adapters import storage_permissions
 from failure_memory.adapters.harness import context
 from failure_memory.adapters.harness.context import HarnessContext, resolve_data_root
+from failure_memory.adapters.harness.identity import detect_harness
 
 
 def test_harness_plugin_data_does_not_partition_the_global_store(tmp_path: Path) -> None:
@@ -19,6 +20,41 @@ def test_harness_plugin_data_does_not_partition_the_global_store(tmp_path: Path)
         }
     )
     assert root == tmp_path / "global"
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ({"COPILOT_PLUGIN_DATA": "/copilot"}, "copilot"),
+        ({"CURSOR_PLUGIN_ROOT": "/cursor"}, "cursor"),
+        (
+            {
+                "PLUGIN_ROOT": "/codex",
+                "CLAUDE_PLUGIN_ROOT": "/codex-compat",
+            },
+            "codex",
+        ),
+        ({"CLAUDE_PLUGIN_ROOT": "/claude"}, "claude-code"),
+        ({"FAILURE_MEMORY_HARNESS": "custom-agent"}, "custom-agent"),
+        ({}, "local"),
+    ],
+)
+def test_harness_identity_is_detected_without_selecting_storage(
+    environment: dict[str, str], expected: str
+) -> None:
+    assert detect_harness(environment) == expected
+
+
+def test_explicit_harness_identity_takes_precedence() -> None:
+    assert (
+        detect_harness(
+            {
+                "FAILURE_MEMORY_HARNESS": "codex",
+                "COPILOT_PLUGIN_DATA": "/copilot",
+            }
+        )
+        == "codex"
+    )
 
 
 def test_context_uses_keyed_stable_fingerprints(tmp_path: Path) -> None:

@@ -7,6 +7,25 @@ use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-30
+
+### Added
+
+- Required second-tier generalization review with bounded exact, lexical, and semantic
+  candidates before public incident recording.
+- Append-only generalization review/decision events and exact signature aliases.
+- Explicit reviewed reuse, generalization, and distinct-lesson dispositions.
+- Codex, Claude Code, GitHub Copilot, and Cursor plugin manifests.
+- Bounded session-start hooks that inject static guidance without storing prompts.
+- Duplicate-safe Codex/Copilot installation planning and application.
+- Runtime harness detection with one platform-global store across every projection.
+
+### Changed
+
+- The recording skill now requires qualification, generalization review, and explicit
+  disposition before a write.
+- The MCP surface now contains seventeen schema-validated operations.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added

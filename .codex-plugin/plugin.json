@@ -1,6 +1,6 @@
 {
   "name": "failure-memory",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Qualify real agent failures, preserve durable lessons locally, and recall recurrence-prevention guidance.",
   "author": {
     "name": "Failure Memory contributors"

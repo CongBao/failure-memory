@@ -32,14 +32,35 @@ ALLOWED_ROOT_FILES = frozenset(
         "SECURITY.md",
     }
 )
-ALLOWED_ROOT_DIRECTORIES = frozenset({".codex-plugin", "docs", "scripts", "skills", "src"})
-INTENDED_EXECUTABLES = frozenset({"scripts/failure_memory_mcp.py"})
+ALLOWED_ROOT_DIRECTORIES = frozenset(
+    {
+        ".claude-plugin",
+        ".codex-plugin",
+        ".cursor-plugin",
+        ".plugin",
+        "hooks",
+        "scripts",
+        "skills",
+        "src",
+    }
+)
+INTENDED_EXECUTABLES = frozenset(
+    {
+        "scripts/failure_memory_hook.py",
+        "scripts/failure_memory_mcp.py",
+        "scripts/install_harness.py",
+    }
+)
 REQUIRED_FILES = frozenset(
     {
+        ".claude-plugin/plugin.json",
         ".codex-plugin/plugin.json",
+        ".cursor-plugin/plugin.json",
         ".mcp.json",
+        ".plugin/plugin.json",
         "LICENSE",
         "README.md",
+        "hooks/hooks.json",
         "scripts/failure_memory_mcp.py",
     }
 )

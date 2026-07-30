@@ -5,7 +5,7 @@ description: Use when a user challenges an agent outcome, reports a missed prior
 
 # Record Agent Failure
 
-<!-- Generated from contract.json by tools/render_skills.py; policy sha256=37acd89ff6cf98655e02f14bbe2af40836b1cef854bc58bb699d1a729c1628ce; behavior sha256=501aafd6da4a77107c4ffc38cb276db21824645d9a1b330d244b799aaa71fbf1; renderer sha256=4b524d3cba4491d5bd7825a5c6d343a60297bc6ddfafe269fa8f01af4d2c36d0; DO NOT EDIT SKILL.md MANUALLY. -->
+<!-- Generated from contract.json by tools/render_skills.py; policy sha256=bf7e5b9cb5abc09a27706a0ac8932f409d2c9b0fe62d6eb2b2ff605017380c94; behavior sha256=133ecf6544b28c1ba4fd2fe20b46d54407b1a9986929595f963cb83574fa8464; renderer sha256=1f13de2458b77e160e499097c60f26d317f8185eb680aba86e360dc11a4a4983; DO NOT EDIT SKILL.md MANUALLY. -->
 
 ## Core principle
 
@@ -16,11 +16,13 @@ knowable before the outcome, then preserve only a material, controllable, durabl
 
 | Contract key | Normative rule |
 |---|---|
-| `first_call` | `evaluate_failure_candidate` MUST precede `record_failure_incident` and MUST be the first failure-memory call for every Tier One classification. |
-| `write_gate` | `record_failure_incident` MUST be called ONLY IF evaluation returns `accept`; `record_failure_incident` MUST NOT be called for `reject` or `defer`. |
+| `first_call` | `evaluate_failure_candidate` MUST precede `review_failure_recording` and `record_failure_incident` and MUST be the first failure-memory call for every Tier One classification. |
+| `write_gate` | `review_failure_recording` and `record_failure_incident` MUST be called ONLY IF evaluation returns `accept`; `record_failure_incident` MUST NOT be called for `reject` or `defer`. |
+| `second_tier` | `review_failure_recording` MUST precede `record_failure_incident`; review at most three candidates and never merge automatically. |
 | `rejected_status` | A rejected or deferred capture MUST NOT be described or called a failure. |
 | `lesson_authority` | A new or reused lesson MUST remain `proposed`; a proposed lesson MUST NOT be described, promoted, or treated as `verified`. |
-| `mixed_output` | For `mixed`, the intended-call field MUST be `evaluate_failure_candidate -> record_failure_incident only if decision=accept (otherwise no write)`, and new requirements MUST remain outside the failure. |
+| `mixed_output` | For `mixed`, the intended-call field MUST be `evaluate_failure_candidate -> review_failure_recording -> record_failure_incident only if decision=accept (otherwise no write)`, and new requirements MUST remain outside the failure. |
+| `post_accept_output` | For an accepted capture with a related candidate, name `review_failure_recording -> record_failure_incident only after explicit disposition`; also state: inspect at most three; select `reuse_existing`, `generalize_existing`, or `create_distinct` with rationale; defer if uncertain; never auto-merge or promote to verified. |
 
 ## Required workflow
 
@@ -51,13 +53,19 @@ knowable before the outcome, then preserve only a material, controllable, durabl
    mismatch in the failure portion; retain a new requirement only as context. Shared
    topic, urgency, or authority never turns new work into a lesson. The intended-call
    field has this required shape:
-   `evaluate_failure_candidate -> record_failure_incident only if decision=accept
+   `evaluate_failure_candidate -> review_failure_recording -> record_failure_incident only if decision=accept
    (otherwise no write)`. Never list the record call without its acceptance condition.
 6. Only after `accept`, draft the immutable incident and one proposed lesson from the
    accepted failure portion.
-7. Call `record_failure_incident` with the accepted capture ID and sanitized drafts.
-8. Report whether the result created a new proposed lesson or reused an exact existing
-   lesson. Cite returned identifiers. Never describe a proposed lesson as verified.
+7. Call `review_failure_recording` with the accepted capture ID and the same sanitized drafts. Inspect at
+   most three candidates. Exact matches must be reused; related matches require an explicit
+   `reuse_existing`, `generalize_existing`, or `create_distinct` disposition and rationale.
+   If fit is uncertain, defer recording. Similarity never authorizes an automatic merge.
+8. Call `record_failure_incident` with the review ID, disposition, rationale, accepted capture ID, and
+   unchanged drafts. Target a returned lesson version for reuse or generalization.
+9. Report whether the result created, reused, or generalized a proposed lesson. Cite the
+   review, decision, incident, lesson, and version identifiers. Never describe a proposed
+   lesson as verified.
 
 ## Mixed example
 

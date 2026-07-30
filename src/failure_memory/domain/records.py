@@ -16,7 +16,15 @@ class LessonState(StrEnum):
 
 class IncidentLessonRelation(StrEnum):
     SAME_CAUSE_SAME_INVARIANT = "same_cause_same_invariant"
+    REVIEWED_REUSE = "reviewed_reuse"
+    REVIEWED_GENERALIZATION = "reviewed_generalization"
     NOVEL = "novel"
+
+
+class RecordingDisposition(StrEnum):
+    REUSE_EXISTING = "reuse_existing"
+    GENERALIZE_EXISTING = "generalize_existing"
+    CREATE_DISTINCT = "create_distinct"
 
 
 @dataclass(frozen=True)
@@ -70,6 +78,7 @@ class RecordResult:
     lesson_version_id: str
     relation: IncidentLessonRelation
     created_new_lesson: bool
+    generalization_decision_id: str | None = None
 
 
 def _normalize(value: str) -> str:

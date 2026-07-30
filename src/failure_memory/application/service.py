@@ -24,18 +24,20 @@ from failure_memory.adapters.event_store.sqlite.importer import (
 from failure_memory.adapters.event_store.sqlite.migrate import apply_migrations
 from failure_memory.adapters.event_store.sqlite.store import SQLiteEventStore
 from failure_memory.adapters.harness.context import HarnessContext, resolve_data_root
+from failure_memory.adapters.harness.identity import detect_harness
 from failure_memory.adapters.retrieval.sqlite import SQLiteRetrievalIndex
 from failure_memory.adapters.storage_permissions import ensure_private_tree
 from failure_memory.application.errors import SemanticSetupRequiredError, StorageBusyError
 from failure_memory.application.redaction import RedactionResult, redact_text
 from failure_memory.domain.capture import CaptureAssessment, FailureCandidate
-from failure_memory.domain.learning import LessonCluster
+from failure_memory.domain.learning import GeneralizationRecommendation, LessonCluster
 from failure_memory.domain.policy import evaluate_candidate
 from failure_memory.domain.records import (
     IncidentDraft,
     LessonDraft,
     LessonState,
     LessonVersionRecord,
+    RecordingDisposition,
     RecordResult,
     lesson_signature,
 )
@@ -110,6 +112,11 @@ class FailureMemoryService:
         capture_attempt_id: str,
         incident: IncidentDraft,
         lesson: LessonDraft,
+        *,
+        generalization_review_id: str | None = None,
+        disposition: RecordingDisposition | None = None,
+        target_lesson_version_id: str | None = None,
+        rationale_code: str | None = None,
     ) -> RecordResult:
         safe_incident, incident_results = _redact_incident(incident)
         safe_lesson, lesson_results = _redact_lesson(lesson)
@@ -120,10 +127,131 @@ class FailureMemoryService:
             self.context,
             created_at=self.clock(),
             redaction_state=_redaction_state(*incident_results, *lesson_results),
+            generalization_review_id=generalization_review_id,
+            disposition=disposition,
+            target_lesson_version_id=target_lesson_version_id,
+            rationale_code=rationale_code,
         )
         with suppress(Exception):
             self.build_index()
         return result
+
+    def review_failure_recording(
+        self,
+        capture_attempt_id: str,
+        incident: IncidentDraft,
+        lesson: LessonDraft,
+    ) -> Mapping[str, object]:
+        safe_incident, incident_results = _redact_incident(incident)
+        safe_lesson, lesson_results = _redact_lesson(lesson)
+        signature = lesson_signature(
+            safe_incident.expected_invariant,
+            safe_incident.controllable_cause,
+            safe_lesson.prevention_action,
+        )
+        documents = self._retrieval_documents()
+        document_by_id = {document.lesson_version.id: document for document in documents}
+        exact = self.store.find_lesson_by_signature(signature)
+        candidates: tuple[RecallCandidate, ...]
+        profile_name = "exact-signature"
+        if exact is not None:
+            document = document_by_id.get(exact.id)
+            candidates = (
+                RecallCandidate(
+                    lesson=exact,
+                    expected_invariant=(
+                        safe_incident.expected_invariant
+                        if document is None
+                        else document.expected_invariant
+                    ),
+                    controllable_cause=(
+                        safe_incident.controllable_cause
+                        if document is None
+                        else document.controllable_cause
+                    ),
+                    outcome_summary=(
+                        safe_incident.outcome_summary
+                        if document is None
+                        else document.outcome_summary
+                    ),
+                    channels=("exact",),
+                    score=1.0,
+                    exact=True,
+                ),
+            )
+            recommendation = GeneralizationRecommendation.REUSE_EXACT
+        elif self.retrieval_index is None:
+            candidates = ()
+            recommendation = GeneralizationRecommendation.CREATE_DISTINCT
+        else:
+            retrieval = self.retrieval_index
+            retrieval.sync(documents)
+            profile_name = retrieval.profile.name
+            query = RecallQuery(
+                text=" ".join(
+                    (
+                        safe_incident.outcome_summary,
+                        safe_lesson.title,
+                        safe_lesson.rule,
+                        safe_lesson.applicability,
+                    )
+                ),
+                mode=RecallMode.HYBRID,
+                top_k=3,
+                expected_invariant=safe_incident.expected_invariant,
+                controllable_cause=safe_incident.controllable_cause,
+                prevention_action=safe_lesson.prevention_action,
+            )
+            lexical = tuple(retrieval.search_lexical(query, limit=10))
+            semantic: tuple[RetrievalMatch, ...] = ()
+            with suppress(SemanticSetupRequiredError):
+                semantic = tuple(retrieval.search_semantic(query, limit=10))
+            candidates = _fuse_matches(
+                lexical,
+                semantic,
+                document_by_id,
+                limit=3,
+            )
+            recommendation = (
+                GeneralizationRecommendation.REVIEW_RELATED
+                if candidates
+                else GeneralizationRecommendation.CREATE_DISTINCT
+            )
+        review = self.store.append_generalization_review(
+            capture_attempt_id,
+            signature,
+            recommendation,
+            profile_name,
+            [candidate.lesson.id for candidate in candidates],
+            self.context,
+            created_at=self.clock(),
+            redaction_state=_redaction_state(*incident_results, *lesson_results),
+        )
+        return {
+            "review_id": review.id,
+            "recommendation": review.recommendation.value,
+            "retrieval_profile": review.retrieval_profile,
+            "automatic_merge": False,
+            "candidates": [
+                {
+                    "lesson_version_id": candidate.lesson.id,
+                    "lesson_id": candidate.lesson.lesson_id,
+                    "title": candidate.lesson.draft.title,
+                    "rule": candidate.lesson.draft.rule,
+                    "prevention_action": candidate.lesson.draft.prevention_action,
+                    "verification_action": candidate.lesson.draft.verification_action,
+                    "applicability": candidate.lesson.draft.applicability,
+                    "counterexamples": candidate.lesson.draft.counterexamples,
+                    "expected_invariant": candidate.expected_invariant,
+                    "controllable_cause": candidate.controllable_cause,
+                    "channels": list(candidate.channels),
+                    "score": candidate.score,
+                    "exact": candidate.exact,
+                    "lifecycle_state": candidate.lesson.state.value,
+                }
+                for candidate in candidates
+            ],
+        }
 
     def find_related_failures(
         self,
@@ -477,8 +605,10 @@ class FailureMemoryService:
             "copy_only_store_import",
             "recall_telemetry",
             "learning_metrics",
+            "tier_two_generalization_review",
         ]
-        unavailable = ["prompt_hook", "production_feedback_ranking"]
+        available.append("bounded_session_hook")
+        unavailable = ["production_feedback_ranking"]
         if retrieval_status is not None and retrieval_status.lexical_available:
             available.append("fts5_recall")
         else:
@@ -641,7 +771,7 @@ def create_local_service(
     context = HarnessContext.create(
         root,
         Path.cwd() if cwd is None else cwd,
-        harness or os.environ.get("FAILURE_MEMORY_HARNESS", "local"),
+        harness or detect_harness(os.environ),
         session_id or os.environ.get("FAILURE_MEMORY_SESSION_ID"),
     )
     database_parent = ensure_private_tree(

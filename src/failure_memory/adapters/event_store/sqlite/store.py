@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -21,6 +22,8 @@ from failure_memory.domain.capture import (
 from failure_memory.domain.ids import new_id
 from failure_memory.domain.learning import (
     ClusterRunResult,
+    GeneralizationRecommendation,
+    GeneralizationReview,
     LessonCluster,
     LessonTransition,
     RankingExperimentResult,
@@ -31,6 +34,7 @@ from failure_memory.domain.records import (
     LessonDraft,
     LessonState,
     LessonVersionRecord,
+    RecordingDisposition,
     RecordResult,
     lesson_signature,
 )
@@ -148,6 +152,10 @@ class SQLiteEventStore(EventStorePort):
         *,
         created_at: datetime,
         redaction_state: str,
+        generalization_review_id: str | None = None,
+        disposition: RecordingDisposition | None = None,
+        target_lesson_version_id: str | None = None,
+        rationale_code: str | None = None,
     ) -> RecordResult:
         signature = lesson_signature(
             incident.expected_invariant,
@@ -166,6 +174,10 @@ class SQLiteEventStore(EventStorePort):
                 created_at=created_at,
                 redaction_state=redaction_state,
                 signature=signature,
+                generalization_review_id=generalization_review_id,
+                disposition=disposition,
+                target_lesson_version_id=target_lesson_version_id,
+                rationale_code=rationale_code,
             )
 
         return self._retry_busy_write(record)
@@ -180,10 +192,28 @@ class SQLiteEventStore(EventStorePort):
         created_at: datetime,
         redaction_state: str,
         signature: str,
+        generalization_review_id: str | None,
+        disposition: RecordingDisposition | None,
+        target_lesson_version_id: str | None,
+        rationale_code: str | None,
     ) -> RecordResult:
         try:
             self.connection.execute("BEGIN IMMEDIATE")
             existing = self.find_lesson_by_signature(signature)
+            review = (
+                None
+                if generalization_review_id is None
+                else self.get_generalization_review(generalization_review_id)
+            )
+            if review is not None:
+                self._validate_generalization_decision(
+                    review,
+                    capture_attempt_id,
+                    signature,
+                    disposition,
+                    target_lesson_version_id,
+                    rationale_code,
+                )
             incident_id = new_id("inc")
             self._insert_incident(
                 incident_id,
@@ -193,7 +223,16 @@ class SQLiteEventStore(EventStorePort):
                 created_at,
                 redaction_state,
             )
-            if existing is None:
+            effective_disposition = disposition
+            if review is None:
+                effective_disposition = (
+                    RecordingDisposition.CREATE_DISTINCT
+                    if existing is None
+                    else RecordingDisposition.REUSE_EXISTING
+                )
+                target_lesson_version_id = None if existing is None else existing.id
+            assert effective_disposition is not None
+            if effective_disposition is RecordingDisposition.CREATE_DISTINCT:
                 lesson_id = new_id("les")
                 version_id = new_id("lv")
                 self._insert_lesson(lesson_id, context, created_at, redaction_state)
@@ -207,12 +246,56 @@ class SQLiteEventStore(EventStorePort):
                     redaction_state,
                 )
                 self._set_lesson_head(lesson_id, version_id, created_at)
+                self._insert_signature_alias(
+                    signature,
+                    lesson_id,
+                    version_id,
+                    context,
+                    created_at,
+                    redaction_state,
+                )
                 relation = IncidentLessonRelation.NOVEL
                 created_new_lesson = True
             else:
-                lesson_id = existing.lesson_id
-                version_id = existing.id
-                relation = IncidentLessonRelation.SAME_CAUSE_SAME_INVARIANT
+                assert target_lesson_version_id is not None
+                target = self._current_lesson_for_version(target_lesson_version_id)
+                lesson_id = target.lesson_id
+                if effective_disposition is RecordingDisposition.GENERALIZE_EXISTING:
+                    version_id = new_id("lv")
+                    self._insert_lesson_version(
+                        version_id,
+                        lesson_id,
+                        signature,
+                        lesson,
+                        context,
+                        created_at,
+                        redaction_state,
+                        version_number=target.version_number + 1,
+                    )
+                    self.connection.execute(
+                        """
+                        UPDATE lesson_head
+                        SET lesson_version_id = ?, updated_at = ?
+                        WHERE lesson_id = ?
+                        """,
+                        (version_id, _timestamp(created_at), lesson_id),
+                    )
+                    relation = IncidentLessonRelation.REVIEWED_GENERALIZATION
+                else:
+                    version_id = target.id
+                    relation = (
+                        IncidentLessonRelation.SAME_CAUSE_SAME_INVARIANT
+                        if target.signature == signature
+                        else IncidentLessonRelation.REVIEWED_REUSE
+                    )
+                self._insert_signature_alias(
+                    signature,
+                    lesson_id,
+                    version_id,
+                    context,
+                    created_at,
+                    redaction_state,
+                )
                 created_new_lesson = False
             self._insert_relation(
                 self._relation_id(),
@@ -224,6 +307,33 @@ class SQLiteEventStore(EventStorePort):
                 created_at,
                 redaction_state,
             )
+            decision_id: str | None = None
+            if review is not None:
+                decision_id = new_id("fgd")
+                self.connection.execute(
+                    """
+                    INSERT INTO failure_generalization_decision_event(
+                        id, schema_version, created_at, source_harness,
+                        workspace_fingerprint, session_fingerprint, provenance,
+                        redaction_state, review_id, disposition, rationale_code,
+                        target_lesson_version_id, resulting_lesson_version_id
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        decision_id,
+                        _timestamp(created_at),
+                        context.harness,
+                        context.workspace_fingerprint,
+                        context.session_fingerprint,
+                        _PROVENANCE,
+                        redaction_state,
+                        review.id,
+                        effective_disposition.value,
+                        rationale_code.strip() if rationale_code is not None else "",
+                        target_lesson_version_id,
+                        version_id,
+                    ),
+                )
             self.connection.execute("COMMIT")
         except BaseException:
             if self.connection.in_transaction:
@@ -235,6 +345,106 @@ class SQLiteEventStore(EventStorePort):
             lesson_version_id=version_id,
             relation=relation,
             created_new_lesson=created_new_lesson,
+            generalization_decision_id=decision_id,
+        )
+
+    def append_generalization_review(
+        self,
+        capture_attempt_id: str,
+        proposed_signature: str,
+        recommendation: GeneralizationRecommendation,
+        retrieval_profile: str,
+        candidate_lesson_version_ids: Sequence[str],
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> GeneralizationReview:
+        if self.get_capture_decision(capture_attempt_id) is not CaptureDecision.ACCEPT:
+            raise ValueError("capture attempt is not accepted")
+        candidate_ids = tuple(dict.fromkeys(candidate_lesson_version_ids))
+        if len(candidate_ids) > 3:
+            raise ValueError("generalization review accepts at most three candidates")
+        if (
+            recommendation is GeneralizationRecommendation.REUSE_EXACT
+            and len(candidate_ids) != 1
+        ):
+            raise ValueError("exact reuse review requires exactly one candidate")
+        if (
+            recommendation is GeneralizationRecommendation.REVIEW_RELATED
+            and not candidate_ids
+        ):
+            raise ValueError("related review requires at least one candidate")
+        if (
+            recommendation is GeneralizationRecommendation.CREATE_DISTINCT
+            and candidate_ids
+        ):
+            raise ValueError("distinct review cannot include candidates")
+        for candidate_id in candidate_ids:
+            self._current_lesson_for_version(candidate_id)
+        review = GeneralizationReview(
+            id=new_id("fgr"),
+            capture_attempt_id=capture_attempt_id,
+            proposed_signature=proposed_signature,
+            recommendation=recommendation,
+            retrieval_profile=retrieval_profile,
+            candidate_lesson_version_ids=candidate_ids,
+        )
+
+        def append() -> None:
+            self.connection.execute(
+                """
+                INSERT INTO failure_generalization_review(
+                    id, schema_version, created_at, source_harness,
+                    workspace_fingerprint, session_fingerprint, provenance,
+                    redaction_state, capture_attempt_id, proposed_signature,
+                    recommendation, retrieval_profile,
+                    candidate_lesson_version_ids_json, automatic_merge
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    review.id,
+                    _timestamp(created_at),
+                    context.harness,
+                    context.workspace_fingerprint,
+                    context.session_fingerprint,
+                    _PROVENANCE,
+                    redaction_state,
+                    capture_attempt_id,
+                    proposed_signature,
+                    recommendation.value,
+                    retrieval_profile,
+                    json.dumps(review.candidate_lesson_version_ids, separators=(",", ":")),
+                ),
+            )
+
+        self._retry_busy_write(append)
+        return review
+
+    def get_generalization_review(self, review_id: str) -> GeneralizationReview:
+        row = self.connection.execute(
+            """
+            SELECT id, capture_attempt_id, proposed_signature, recommendation,
+                   retrieval_profile, candidate_lesson_version_ids_json
+            FROM failure_generalization_review
+            WHERE id = ?
+            """,
+            (review_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("generalization review not found")
+        candidate_ids = json.loads(str(row["candidate_lesson_version_ids_json"]))
+        if not isinstance(candidate_ids, list) or not all(
+            isinstance(item, str) for item in candidate_ids
+        ):
+            raise ValueError("invalid generalization review candidates")
+        return GeneralizationReview(
+            id=str(row["id"]),
+            capture_attempt_id=str(row["capture_attempt_id"]),
+            proposed_signature=str(row["proposed_signature"]),
+            recommendation=GeneralizationRecommendation(str(row["recommendation"])),
+            retrieval_profile=str(row["retrieval_profile"]),
+            candidate_lesson_version_ids=tuple(candidate_ids),
         )
 
     def _retry_busy_write(self, operation: Callable[[], _ResultT]) -> _ResultT:
@@ -265,15 +475,70 @@ class SQLiteEventStore(EventStorePort):
                    version.lifecycle_state, version.signature, version.title, version.rule,
                    version.prevention_action, version.verification_action, version.applicability,
                    version.counterexamples
-            FROM lesson_head AS head
+            FROM lesson_signature_alias AS alias
+            JOIN lesson_head AS head ON head.lesson_id = alias.lesson_id
             JOIN lesson_version AS version ON version.id = head.lesson_version_id
-            WHERE version.signature = ?
+            WHERE alias.signature = ?
             ORDER BY version.created_at, version.id
             LIMIT 1
             """,
             (signature,),
         ).fetchone()
         return None if row is None else _lesson_version_from_row(row)
+
+    def _validate_generalization_decision(
+        self,
+        review: GeneralizationReview,
+        capture_attempt_id: str,
+        signature: str,
+        disposition: RecordingDisposition | None,
+        target_lesson_version_id: str | None,
+        rationale_code: str | None,
+    ) -> None:
+        if review.capture_attempt_id != capture_attempt_id:
+            raise ValueError("generalization review belongs to another capture")
+        if review.proposed_signature != signature:
+            raise ValueError("recording drafts differ from the reviewed failure")
+        sanitized_rationale_code = (rationale_code or "").strip()
+        if disposition is None or not sanitized_rationale_code:
+            raise ValueError("reviewed recording requires disposition and rationale code")
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", sanitized_rationale_code) is None:
+            raise ValueError("rationale code must be a bounded machine code")
+        consumed = self.connection.execute(
+            "SELECT 1 FROM failure_generalization_decision_event WHERE review_id = ?",
+            (review.id,),
+        ).fetchone()
+        if consumed is not None:
+            raise ValueError("generalization review already has a decision")
+        if (
+            review.recommendation is GeneralizationRecommendation.REUSE_EXACT
+            and disposition is not RecordingDisposition.REUSE_EXISTING
+        ):
+            raise ValueError("an exact existing lesson must be reused without generalization")
+        if disposition is RecordingDisposition.CREATE_DISTINCT:
+            if target_lesson_version_id is not None:
+                raise ValueError("distinct recording cannot target an existing lesson")
+            return
+        if target_lesson_version_id is None:
+            raise ValueError("reuse and generalization require a target lesson version")
+        if target_lesson_version_id not in review.candidate_lesson_version_ids:
+            raise ValueError("target lesson was not part of the review")
+
+    def _current_lesson_for_version(self, version_id: str) -> LessonVersionRecord:
+        row = self.connection.execute(
+            """
+            SELECT version.*
+            FROM lesson_version AS version
+            JOIN lesson_head AS head
+              ON head.lesson_id = version.lesson_id
+             AND head.lesson_version_id = version.id
+            WHERE version.id = ?
+            """,
+            (version_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("target lesson review is stale or invalid")
+        return _lesson_version_from_row(row)
 
     def list_retrieval_documents(self) -> tuple[RetrievalDocument, ...]:
         rows = self.connection.execute(
@@ -640,21 +905,14 @@ class SQLiteEventStore(EventStorePort):
                 self.connection, "SELECT COUNT(*) FROM recall_miss_event"
             ),
             "feedback_coverage": _ratio(labeled_attempt_count, attempt_count),
-            "selection_feedback_coverage": _ratio(
-                labeled_selection_count, selection_count
-            ),
-            "useful_rate": _ratio(
-                positive_selection_count, labeled_selection_count
-            ),
-            "false_positive_rate": _ratio(
-                false_positive_count, labeled_selection_count
-            ),
+            "selection_feedback_coverage": _ratio(labeled_selection_count, selection_count),
+            "useful_rate": _ratio(positive_selection_count, labeled_selection_count),
+            "false_positive_rate": _ratio(false_positive_count, labeled_selection_count),
             "precision_at": precision_at,
             "exact_reuse_count": exact_reuse_count,
             "exact_reuse_rate": _ratio(exact_reuse_count, relation_count),
             "attempts_by_harness": {
-                str(row["source_harness"]): int(row["attempts"])
-                for row in harness_rows
+                str(row["source_harness"]): int(row["attempts"]) for row in harness_rows
             },
         }
 
@@ -1084,6 +1342,8 @@ class SQLiteEventStore(EventStorePort):
         context: HarnessContext,
         created_at: datetime,
         redaction_state: str,
+        *,
+        version_number: int = 1,
     ) -> None:
         self.connection.execute(
             """
@@ -1092,7 +1352,7 @@ class SQLiteEventStore(EventStorePort):
                 session_fingerprint, provenance, redaction_state, lesson_id, version_number,
                 lifecycle_state, signature, title, rule, prevention_action, verification_action,
                 applicability, counterexamples
-            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -1103,6 +1363,7 @@ class SQLiteEventStore(EventStorePort):
                 _PROVENANCE,
                 redaction_state,
                 lesson_id,
+                version_number,
                 LessonState.PROPOSED.value,
                 signature,
                 lesson.title,
@@ -1111,6 +1372,45 @@ class SQLiteEventStore(EventStorePort):
                 lesson.verification_action,
                 lesson.applicability,
                 lesson.counterexamples,
+            ),
+        )
+
+    def _insert_signature_alias(
+        self,
+        signature: str,
+        lesson_id: str,
+        version_id: str,
+        context: HarnessContext,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> None:
+        existing = self.connection.execute(
+            "SELECT lesson_id FROM lesson_signature_alias WHERE signature = ?",
+            (signature,),
+        ).fetchone()
+        if existing is not None:
+            if str(existing["lesson_id"]) != lesson_id:
+                raise ValueError("lesson signature already belongs to another lesson")
+            return
+        self.connection.execute(
+            """
+            INSERT INTO lesson_signature_alias(
+                id, schema_version, created_at, source_harness,
+                workspace_fingerprint, session_fingerprint, provenance,
+                redaction_state, signature, lesson_id, source_lesson_version_id
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("lsa"),
+                _timestamp(created_at),
+                context.harness,
+                context.workspace_fingerprint,
+                context.session_fingerprint,
+                _PROVENANCE,
+                redaction_state,
+                signature,
+                lesson_id,
+                version_id,
             ),
         )
 

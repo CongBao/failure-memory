@@ -23,6 +23,7 @@ coverage.xml
 # Build and generated plugin artifacts
 /build/
 /dist/
+/docs/
 /site/
 /packaging/out/
 

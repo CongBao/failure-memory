@@ -320,7 +320,7 @@ def test_record_from_file_refuses_a_rejected_capture(tmp_path: Path) -> None:
     record_path = tmp_path / "record.json"
     record_path.write_text(json.dumps(_record(capture_id)), encoding="utf-8")
 
-    completed = _run_cli(home, "record", "--input", str(record_path))
+    completed = _run_cli(home, "review", "--input", str(record_path))
 
     assert completed.returncode == 2
     assert _json_stdout(completed) == {
@@ -354,12 +354,28 @@ def test_record_persists_an_accepted_failure_and_metrics_reflect_it(tmp_path: Pa
     capture_id = evaluated_result["capture_attempt_id"]
     assert isinstance(capture_id, str)
 
+    reviewed = _run_cli(
+        home,
+        "review",
+        "--input",
+        "-",
+        input_text=json.dumps(_record(capture_id)),
+    )
+    review_result = _json_stdout(reviewed)
+    record_input = _record(capture_id)
+    record_input.update(
+        {
+            "generalization_review_id": review_result["review_id"],
+            "disposition": "create_distinct",
+            "rationale_code": "no_related_lesson",
+        }
+    )
     recorded = _run_cli(
         home,
         "record",
         "--input",
         "-",
-        input_text=json.dumps(_record(capture_id)),
+        input_text=json.dumps(record_input),
     )
 
     assert recorded.returncode == 0, recorded.stderr

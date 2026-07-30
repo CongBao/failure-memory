@@ -1,0 +1,18 @@
+{
+  "description": "Bounded Failure Memory session guidance; never stores prompts or writes lessons.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness codex --event session-start",
+            "timeout": 5,
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ]
+  }
+}

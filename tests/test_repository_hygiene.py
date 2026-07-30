@@ -23,6 +23,7 @@ def test_local_and_sensitive_paths_are_ignored() -> None:
         ".runtime/adapters/vector-index/sqlite-vec/vectors.sqlite3",
         "plugin-data/failure-memory.sqlite3-wal",
         "packaging/out/failure-memory/.codex-plugin/plugin.json",
+        "docs/architecture.md",
         ".env",
         ".env.local",
         ".envrc",
@@ -49,6 +50,11 @@ def test_public_inputs_are_not_ignored() -> None:
         ".github/workflows/ci.yml",
     ]
     assert {path: check_ignored(path) for path in tracked} == {path: 1 for path in tracked}
+
+
+def test_documentation_directory_is_not_tracked() -> None:
+    listed = subprocess.check_output(["git", "ls-files", "-z", "docs"], cwd=ROOT)
+    assert listed == b""
 
 
 def test_tracked_text_has_no_private_checkout_or_process_artifacts() -> None:

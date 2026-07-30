@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness cursor --event session-start",
+        "timeout": 5
+      }
+    ]
+  }
+}

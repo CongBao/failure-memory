@@ -19,6 +19,7 @@ from failure_memory.domain.capture import (
     FailureCandidate,
     ReasonCode,
 )
+from failure_memory.domain.learning import GeneralizationRecommendation
 from failure_memory.domain.records import (
     IncidentDraft,
     IncidentLessonRelation,
@@ -171,6 +172,52 @@ def test_unknown_capture_cannot_create_any_record(
         "lesson_version": 0,
         "incident_lesson_relation": 0,
     }
+
+
+@pytest.mark.parametrize(
+    ("recommendation", "candidate_ids", "message"),
+    [
+        (
+            GeneralizationRecommendation.REUSE_EXACT,
+            (),
+            "exact reuse review requires exactly one candidate",
+        ),
+        (
+            GeneralizationRecommendation.REVIEW_RELATED,
+            (),
+            "related review requires at least one candidate",
+        ),
+        (
+            GeneralizationRecommendation.CREATE_DISTINCT,
+            ("lv_candidate",),
+            "distinct review cannot include candidates",
+        ),
+        (
+            GeneralizationRecommendation.REVIEW_RELATED,
+            ("lv_1", "lv_2", "lv_3", "lv_4"),
+            "at most three candidates",
+        ),
+    ],
+)
+def test_generalization_review_rejects_inconsistent_candidate_sets(
+    store: SQLiteEventStore,
+    context: HarnessContext,
+    accepted_capture_id: str,
+    recommendation: GeneralizationRecommendation,
+    candidate_ids: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        store.append_generalization_review(
+            accepted_capture_id,
+            "signature",
+            recommendation,
+            "sqlite-fts5",
+            candidate_ids,
+            context,
+            created_at=CREATED_AT,
+            redaction_state="clean",
+        )
 
 
 def test_append_capture_serializes_utc_timestamp_and_reason_codes(
@@ -741,7 +788,7 @@ def test_capture_decision_and_lesson_row_are_mapped_to_domain_records(
     assert store.integrity_check() == "ok"
 
 
-def test_signature_match_uses_only_the_current_lesson_head(
+def test_signature_alias_resolves_to_the_current_lesson_head(
     store: SQLiteEventStore,
     accepted_capture_id: str,
     drafts: tuple[IncidentDraft, LessonDraft, HarnessContext],
@@ -776,4 +823,6 @@ def test_signature_match_uses_only_the_current_lesson_head(
         ("lv_current", CREATED_AT.isoformat(), result.lesson_id),
     )
 
-    assert store.find_lesson_by_signature(original_signature) is None
+    matched = store.find_lesson_by_signature(original_signature)
+    assert matched is not None
+    assert matched.id == "lv_current"
