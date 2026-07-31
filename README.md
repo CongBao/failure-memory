@@ -1,258 +1,224 @@
 # Failure Memory
 
 [![CI](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml)
-[![Python 3.13+](https://img.shields.io/badge/Python-3.13%2B-3776AB.svg)](https://www.python.org/)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Failure Memory gives AI coding agents one shared, local memory of mistakes worth
-remembering.
+AI agents are often told to “learn from this,” but most implementations only collect
+postmortems. They do not reliably distinguish a real mistake from a new requirement,
+find an existing lesson, or bring that lesson back when it matters.
 
-It exists because not every correction is a failure. A user may be adding a requirement,
-supplying a previously unavailable detail, or stating a preference for the first time.
-Saving every correction as a lesson creates noisy memory and makes future agents less
-reliable.
+Failure Memory provides one private, local memory shared by your coding agents. It:
 
-Failure Memory separates those cases from genuine failures, records an evidence-based
-root cause and proposed prevention lesson, finds related lessons, and recalls them across
-agent applications.
-
-## Why it is fast
-
-The normal agent surface contains only two tools:
-
-- `remember_failure` qualifies, diagnoses, deduplicates, records, and emits telemetry in
-  one call.
-- `recall_failure_lessons` performs one bounded exact, lexical, semantic, or hybrid
-  lookup.
-
-The agent does not coordinate a multi-step database workflow. If its harness does not
-expose MCP tools, each bundled skill points directly to a one-command CLI fallback. The
-agent must not search plugin files, inspect SQLite, discover runtimes, call private APIs,
-or create temporary payload files.
-
-Exact and FTS5 matching remain available when the optional vector adapter is not ready.
-Recording never waits for dependency installation or model download.
+- rejects requirement changes, new details, and first-time preferences as failures;
+- records an evidenced root cause, repair location, and prevention lesson in one call;
+- reuses exact lessons and proposes review for related lessons instead of silently
+  duplicating or merging them;
+- recalls up to three relevant lessons with exact, full-text, vector, or hybrid search;
+- keeps append-only recall and outcome history for metrics and future improvement.
 
 ## Supported agents
 
-All projections use the same memory store for the current OS user.
-
-| Agent or harness | Integration |
+| Agent | Integration |
 | --- | --- |
-| OpenAI Codex | Plugin, skills, hooks, MCP |
-| Claude Code | Plugin, skills, hooks, MCP |
-| GitHub Copilot CLI | Plugin, skills, session hook, MCP |
-| GitHub Copilot Chat in VS Code | User skills and VS Code MCP configuration |
-| Cursor | Plugin, skills, session hook, MCP |
-| Other agents | Generic skill projection, optional MCP configuration, CLI fallback |
+| OpenAI Codex | Plugin, skills, hooks, optional MCP |
+| Claude Code | Plugin, skills, hooks, optional MCP |
+| GitHub Copilot CLI | Plugin, skills, hooks, optional MCP |
+| GitHub Copilot Chat in VS Code | Skills and MCP configuration |
+| Cursor | Plugin, skills, session hook, optional MCP |
+| Other agents | Skills plus CLI; MCP is optional |
 
-## Requirements
-
-- Python 3.13 or newer; Python 3.14 is recommended
-- Git
-
-```bash
-python3 --version
-```
+Every integration uses the same OS-user store. Installing another plugin does not create
+another memory database.
 
 ## Install
 
-### Codex
+Failure Memory is a native executable. Python, Node.js, and a local database server are
+not required.
+
+### 1. Install the native runtime
+
+macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/install.ps1 | iex
+```
+
+The installer verifies the release checksum and places one executable in the user's
+local binary directory.
+
+### 2. Install the plugin
+
+Codex:
 
 ```bash
 codex plugin marketplace add CongBao/failure-memory
 codex plugin add failure-memory@failure-memory
 ```
 
-Start a new Codex task after installation.
-
-### Claude Code
+Claude Code:
 
 ```bash
 claude plugin marketplace add CongBao/failure-memory
 claude plugin install failure-memory@failure-memory
 ```
 
-Run `/reload-plugins` or start a new session.
-
-### GitHub Copilot CLI
+GitHub Copilot CLI:
 
 ```bash
 copilot plugin install CongBao/failure-memory
 ```
 
-Start a new Copilot CLI session.
+Cursor:
 
-### GitHub Copilot Chat in VS Code
-
-```bash
-git clone https://github.com/CongBao/failure-memory.git
-cd failure-memory
-python3 scripts/install_harness.py --target copilot-vscode --apply
+```text
+/add-plugin CongBao/failure-memory
 ```
 
-Restart VS Code or run **Developer: Reload Window**. The installer preserves existing
-servers in the VS Code user `mcp.json`, adds the managed Failure Memory server, and
-projects both skills under `~/.copilot/skills`.
+For another CLI-capable agent, copy `skills/record-agent-failure` and
+`skills/recall-failure-lessons` into its skill directory. The skills call the global
+`failure-memory` command directly when MCP is unavailable. If the agent accepts MCP
+configuration, reuse [`.mcp.json`](.mcp.json); this improves tool discovery but does not
+change the stored data or behavior.
 
-### Cursor
-
-```bash
-git clone https://github.com/CongBao/failure-memory.git
-cd failure-memory
-python3 scripts/install_harness.py --target cursor --apply
-```
-
-Restart Cursor or run **Developer: Reload Window**.
-
-### Another agent
-
-Install the two skills into the agent's skill root:
+Restart an already-open agent after installation. Run this to verify the shared runtime
+and detect existing plugin identities:
 
 ```bash
-python3 scripts/install_harness.py \
-  --target generic \
-  --skills-dir /path/to/agent/skills \
-  --agent-name my-agent \
-  --apply
+failure-memory install status
 ```
-
-If the agent supports MCP JSON configuration, add its file:
-
-```bash
-python3 scripts/install_harness.py \
-  --target generic \
-  --skills-dir /path/to/agent/skills \
-  --mcp-config /path/to/mcp.json \
-  --agent-name my-agent \
-  --apply
-```
-
-Without `--mcp-config`, the installed skills use their adjacent CLI fallback. A harness
-must support either MCP tool calls or shell execution to access external memory.
-
-### Install several local projections safely
-
-Preview:
-
-```bash
-python3 scripts/install_harness.py \
-  --target codex \
-  --target claude-code \
-  --target copilot-cli \
-  --target copilot-vscode \
-  --target cursor
-```
-
-Apply:
-
-```bash
-python3 scripts/install_harness.py \
-  --target codex \
-  --target claude-code \
-  --target copilot-cli \
-  --target copilot-vscode \
-  --target cursor \
-  --apply
-```
-
-The installer reports `install`, `update`, `noop`, or `conflict`. It does not overwrite
-an unmanaged skill or MCP entry, and repeated targets do not create duplicate
-installations.
 
 ## Use
 
-You can speak naturally. The agent loads the appropriate skill.
+The plugin exposes two deliberately small agent operations.
 
-### Recall lessons before risky work
+### Recall before risky work
 
-```text
-Before changing this installer, recall any relevant failure lessons.
-```
-
-The skill makes one bounded recall call and applies at most three returned lessons as
-proposed cautions.
-
-### Record a possible failure
+Ask naturally:
 
 ```text
-Check whether this was a real failure and remember it if warranted. Find the root cause
-and recommend where to fix it. Do not treat my new requirements as failures.
+Before changing this installer, recall relevant failure lessons.
 ```
 
-The skill reconstructs only the minimum evidence and calls `remember_failure` once.
-Internally the service:
+The recall skill makes one bounded lookup and treats returned lessons as proposed
+cautions, not as authority.
 
-1. distinguishes a real failure from a requirement update, clarification, preference,
-   mixed case, or uncertain case;
-2. stores rejected false-positive capture attempts for measurement without creating a
-   lesson;
-3. records one evidence-bounded cause and proposed repair;
-4. reuses an exact lesson or records related work for later generalization;
-5. appends the incident, proposed lesson, and operation latency telemetry.
+### Record a failure
 
-For mixed feedback, only the prior-invariant mismatch enters memory. New work stays in
-the normal requirement workflow.
+Ask naturally:
+
+```text
+Check whether this was a real failure. If it was, find the root cause, say where it
+should be fixed, and remember the durable lesson. Do not treat my new requirements as
+failures.
+```
+
+The recording skill makes one call. The service then:
+
+1. classifies the feedback as a requirement update, clarification, preference, real
+   failure, mixed case, or uncertain case;
+2. stores the classification attempt for false-positive measurement;
+3. creates a lesson only when a prior invariant, mismatch, impact or recurrence risk,
+   controllable cause, and prevention are evidenced;
+4. identifies the responsible layer, such as a skill, agent/project/system instruction,
+   hook, tool contract, runtime adapter, schema, test gap, or implementation;
+5. reuses an exact lesson or queues related lessons for non-destructive generalization
+   review.
+
+For mixed feedback, only the old-invariant failure enters memory. New work remains a
+normal requirement.
 
 ### CLI fallback
 
-The same one-call contract is available directly:
+Any agent that can run a local command can use Failure Memory without MCP:
 
 ```bash
-python3 scripts/failure_memory_cli.py remember --stdin
+printf '%s' '{"text":"schema migration","component":"migration workflow"}' \
+  | failure-memory recall
 ```
 
-Pass one JSON object on standard input. The launcher automatically selects the validated
-private adapter runtime when one is installed.
+`remember` and `recall` each accept one JSON object on standard input and return one JSON
+object. Skills are instructed never to search plugin files, inspect SQLite, create
+temporary payloads, or retry multiple fallbacks.
 
-## Search
+## Why both CLI and MCP?
 
-Failure Memory supports:
+The CLI is the universal interface and the administration surface. MCP is an optional,
+thin adapter for agents that support it:
 
-- exact signature lookup;
-- SQL/FTS5 lexical lookup;
-- local sqlite-vec semantic lookup;
-- application-level hybrid ranking;
-- reviewed cluster recall.
+- the agent discovers the two operations automatically;
+- JSON Schema validates arguments before execution;
+- no shell quoting or command construction is needed;
+- a persistent MCP process can keep the optional semantic model warm.
 
-Optional vector dependencies and the embedding model live under the global adapter
-directory. Install them explicitly outside an agent recording call:
+Both call the same in-process service. There is no separate MCP database or behavior.
+
+## Search and adapters
+
+The default local backend combines:
+
+- exact keys and SQL lookup;
+- SQLite FTS5 full-text search, including CJK bigrams;
+- sqlite-vec cosine vector search;
+- application-level hybrid ranking.
+
+sqlite-vec supplies the vector operator; exact and SQL/FTS search come from SQLite, and
+Failure Memory fuses their rankings for hybrid search.
+
+The built-in vector fallback needs no model download and is not advertised as semantic
+search. To add multilingual semantic search, explicitly install the pinned adapter:
 
 ```bash
-python3 scripts/failure_memory_cli.py adapters plan
-python3 scripts/failure_memory_cli.py adapters install
-python3 scripts/failure_memory_cli.py index build
+failure-memory adapters install
+failure-memory index build
 ```
 
-If semantic search is unavailable, recall degrades to lexical search and recording marks
-semantic reconciliation as pending.
+The model and every database/index implementation live below `adapters/`. No adapter is
+downloaded during an agent call. The retrieval port is implementation-neutral so another
+backend, such as Milvus, can be added without changing skills, MCP, CLI, or the event
+store. SQLite is the default because a personal local memory needs no daemon, stays in
+one backup-friendly directory, and supports exact, full-text, and vector lookup in one
+process. Milvus becomes attractive for a large shared or distributed deployment, not for
+the default single-user plugin.
 
 ## Administration
 
-Administrative operations are intentionally not advertised to every LLM. Use the CLI:
+Administrative commands are not exposed to the normal LLM tool list:
 
 ```bash
-python3 scripts/failure_memory_cli.py doctor
-python3 scripts/failure_memory_cli.py recording-metrics
-python3 scripts/failure_memory_cli.py recall-metrics
-python3 scripts/failure_memory_cli.py learning-metrics
+failure-memory doctor
+failure-memory metrics
+failure-memory store-status
+failure-memory cluster propose
+failure-memory feedback recall
+failure-memory feedback repair
 ```
+
+Clustering and feedback only append proposals or observations. They never delete,
+silently merge, or automatically promote a lesson.
 
 ## Local data and privacy
 
-The append-only event store, derived indexes, embedding model, and adapter runtime are
-kept under one owner-private data root:
+The append-only event store, derived retrieval index, optional model, and installation
+receipt live under one owner-private directory:
 
 - macOS: `~/Library/Application Support/failure-memory`
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/failure-memory`
 - Windows: `%LOCALAPPDATA%\FailureMemory`
 
-Back up the event-store database. Derived indexes and adapter environments can be
-rebuilt. Failure Memory redacts recognized credentials, but agents should not submit raw
-prompts, secrets, personal data, full transcripts, or unnecessary private paths.
+Back up the event-store database; derived indexes can be rebuilt. Agents should submit
+compact evidence, never raw prompts, full transcripts, credentials, or unnecessary
+personal data.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute and [SECURITY.md](SECURITY.md) to
-report a vulnerability.
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should follow
+[SECURITY.md](SECURITY.md).
 
 ## License
 

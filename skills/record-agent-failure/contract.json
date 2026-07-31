@@ -1,5 +1,5 @@
 {
-  "contract_version": 5,
+  "contract_version": 6,
   "policy_kind": "record_failure",
   "skill": {
     "name": "record-agent-failure",
@@ -7,10 +7,9 @@
   },
   "policy": {
     "tool": "remember_failure",
-    "fallback_launcher": "scripts/failure_memory_cli.py",
+    "fallback_command": "failure-memory",
     "fallback_arguments": [
-      "remember",
-      "--stdin"
+      "remember"
     ],
     "classifications": {
       "requirement_update": "The requested feature or contract changed after the outcome.",
@@ -29,15 +28,72 @@
     "sensitive_exclusions": [
       "raw prompts",
       "secrets",
-      "unnecessary user text"
+      "personal data",
+      "transcripts",
+      "unnecessary user text",
+      "unnecessary paths"
     ],
     "single_call": true,
+    "trigger_boundary": "Only challenged prior outcomes, recurrence reports, or explicit failure qualification/learning requests enter this workflow. Ordinary new requirements and refinements do not.",
     "record_qualification_attempts": true,
     "fallback_call_limit": 1,
+    "fallback_only_when": "The named tool capability is absent before invocation; never after timeout or ambiguous failure.",
+    "failure_object_fields": {
+      "expectation": {
+        "required": ["invariant", "source", "evidence"],
+        "optional": []
+      },
+      "observed": {
+        "required": ["outcome", "impact"],
+        "optional": ["recurrence_risk"]
+      },
+      "cause": {
+        "required": [
+          "layer",
+          "failure_mode",
+          "component",
+          "evidence",
+          "recommended_change",
+          "verification"
+        ],
+        "optional": ["confidence"]
+      },
+      "lesson": {
+        "required": ["rule", "prevention", "verification"],
+        "optional": ["title", "applicability", "counterexamples"]
+      }
+    },
+    "non_failure_or_uncertain_fields": {
+      "required": ["summary", "classification"],
+      "optional": ["prior_recall_id"]
+    },
+    "mixed_failure_portion": {
+      "type": "string",
+      "content": "Only the prior-invariant mismatch, excluding new work."
+    },
+    "user_statement_evidence": "An explicit user statement of chronology or a prior invariant is task evidence unless contradicted by available evidence; implementation causes still require evidence.",
     "inspect_implementation": false,
     "inspect_database": false,
     "temporary_files": false,
     "unknown_cause_allowed": true,
+    "unknown_cause_boundary": "Unknown is valid only when the failure is otherwise established and an evidenced component boundary, prevention, and verification remain available; otherwise classify uncertain.",
+    "root_cause_layers": [
+      "skill_instruction",
+      "agent_instruction",
+      "project_instruction",
+      "system_instruction",
+      "hook_policy",
+      "plugin_manifest",
+      "tool_contract",
+      "application_logic",
+      "adapter_runtime",
+      "schema_migration",
+      "test_evaluation_gap",
+      "harness_limitation",
+      "model_behavior",
+      "external_dependency",
+      "unknown"
+    ],
     "lesson_authority": "proposed"
   }
 }

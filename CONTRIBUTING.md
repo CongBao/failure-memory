@@ -1,75 +1,42 @@
 # Contributing
 
-Contributions are welcome. Keep changes small, testable, and consistent with the
-local-first privacy boundary.
+Contributions are welcome. Failure Memory is local-first, append-oriented, and designed
+to keep the normal agent path small.
 
-## Development setup
+## Development
 
 Requirements:
 
-- Python 3.13 or newer;
-- Git;
-- [`uv`](https://docs.astral.sh/uv/).
+- Go 1.26 or newer;
+- Git.
 
 ```bash
-uv sync --extra dev
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
-uv build
+go test ./...
+go vet ./...
+test -z "$(gofmt -l .)"
+go build ./cmd/failure-memory
 ```
 
-## Project conventions
+## Design rules
 
-- Keep domain and application layers independent of concrete vector databases and agent
-  harnesses.
-- Put database, embedding, model, and index implementations under adapters.
-- Preserve the qualification, diagnosis, exact-review, and persistence gates behind the
+- Keep qualification, causal diagnosis, deduplication, and persistence behind the
   one-call recording boundary.
-- Keep causal assessments evidence-bounded; store an explicit unknown instead of
-  assigning blame without inspectable support.
-- Treat incidents as immutable and lessons as versioned, proposed guidance.
-- Never add real credentials, raw prompts, personal data, runtime databases, or absolute
-  contributor paths to fixtures or documentation.
-- Use synthetic, obviously non-production values in redaction tests.
-- Update user-facing documentation when behavior, requirements, or limitations change.
+- Keep CLI and MCP as thin adapters over the same application service.
+- Put event stores, retrieval databases, and embedding/model implementations under
+  adapters and implement the relevant port.
+- Never download dependencies or models during `remember` or `recall`.
+- Treat incidents and telemetry as append-only. Generalization is proposal-and-review,
+  never an automatic merge or deletion.
+- Keep causes evidence-bounded. Use `unknown` instead of assigning unsupported blame.
+- Never commit runtime databases, downloaded models, credentials, raw prompts, personal
+  data, absolute contributor paths, or generated release binaries.
+- Do not add `docs/`, `plans/`, or `specs/` to Git.
 
-## Skills
-
-`skills/*/SKILL.md` files are generated from their adjacent `contract.json` files. Change
-the contract and `tools/render_skills.py`, then regenerate:
-
-```bash
-uv run python tools/render_skills.py
-uv run python tools/render_skills.py --check
-```
-
-Validate each skill with the official skill validator when it is available in your Codex
-installation.
-
-## Codex plugin bundle
-
-Build and test the installable projection:
-
-```bash
-uv run python packaging/build_codex.py
-uv run pytest tests/packaging
-```
-
-The builder performs no deletion. It retains replaced output as a recoverable rollback
-and reports unresolved artifacts instead of overwriting them.
-A release operator may move obsolete rollbacks to Trash after validation.
-A hostile process running as the same user is outside the builder's security boundary.
+Validate plugin JSON and both skills when changing their contracts. Keep the public MCP
+surface limited to `remember_failure` and `recall_failure_lessons`; administration
+belongs in the CLI.
 
 ## Pull requests
 
-Describe:
-
-- the user-visible problem;
-- the safety or privacy implications;
-- tests added or changed;
-- compatibility and migration considerations;
-- any capability that remains intentionally unsupported.
-
-Do not include generated runtime state or packaging output.
+Describe the user-visible change, safety/privacy implications, tests, migration impact,
+and any intentionally unsupported behavior.

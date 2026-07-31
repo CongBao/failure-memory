@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness codex --event session-start",
-            "timeout": 5,
+            "command": "failure-memory hook --harness codex --event session-start",
+            "timeout": 2,
             "additionalContextLimit": 500
           }
         ]
@@ -19,8 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness codex --event user-prompt-submit",
-            "timeout": 5,
+            "command": "failure-memory hook --harness codex --event user-prompt-submit",
+            "timeout": 2,
             "additionalContextLimit": 300
           }
         ]

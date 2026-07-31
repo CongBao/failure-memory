@@ -1,7 +1,7 @@
 {
   "name": "failure-memory",
-  "version": "0.7.0",
-  "description": "Remember real agent failures in one fast call and recall durable local lessons across harnesses.",
+  "version": "0.8.0",
+  "description": "Share evidence-backed failure lessons across agents without saving requirement changes as mistakes.",
   "author": {
     "name": "CongBao",
     "url": "https://github.com/CongBao"
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Failure Memory",
     "shortDescription": "Remember real failures quickly without saving requirement changes.",
-    "longDescription": "Uses one recording call to distinguish real failures from requirement changes, preserve evidence-bounded root causes and proposed repairs, reuse exact lessons, and append telemetry. All installed harnesses recall from one owner-private global memory.",
+    "longDescription": "Uses one native recording call to distinguish real failures from requirement changes, preserve evidence-bounded root causes and proposed repairs, reuse or generalize related lessons safely, and append recall/outcome telemetry. Every local harness shares one owner-private memory.",
     "developerName": "CongBao",
     "category": "Productivity",
     "capabilities": [

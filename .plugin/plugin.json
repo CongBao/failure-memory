@@ -1,7 +1,7 @@
 {
   "name": "failure-memory",
-  "version": "0.7.0",
-  "description": "Remember real agent failures in one fast call and recall durable local lessons across harnesses.",
+  "version": "0.8.0",
+  "description": "Share evidence-backed failure lessons across agents without saving requirement changes as mistakes.",
   "author": {
     "name": "CongBao",
     "url": "https://github.com/CongBao"

@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness claude-code --event session-start",
-            "timeout": 5
+            "command": "failure-memory hook --harness claude-code --event session-start",
+            "timeout": 2
           }
         ]
       }
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness claude-code --event user-prompt-submit",
-            "timeout": 5
+            "command": "failure-memory hook --harness claude-code --event user-prompt-submit",
+            "timeout": 2
           }
         ]
       }

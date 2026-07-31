@@ -4,9 +4,15 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "python3 \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness copilot-cli --event session-start",
-        "powershell": "python \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness copilot-cli --event session-start",
-        "timeoutSec": 5
+        "command": "failure-memory hook --harness copilot-cli --event session-start",
+        "timeoutSec": 2
+      }
+    ],
+    "userPromptTransformed": [
+      {
+        "type": "command",
+        "command": "failure-memory hook --harness copilot-cli --event user-prompt-transformed",
+        "timeoutSec": 2
       }
     ]
   }

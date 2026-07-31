@@ -1,24 +1,26 @@
-# Python bytecode and environments
+# Legacy/local development caches
 __pycache__/
 *.py[cod]
-*.pyd
 .venv/
-*.egg-info/
 
 # Isolated development worktrees
 /.worktrees/
 
-# Test, type-check, lint, and coverage output
+# Test and coverage output
 .pytest_cache/
-.hypothesis/
 .mypy_cache/
 .ruff_cache/
-.tox/
-.nox/
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
+coverage.out
+*.test
+
+# Local Go binaries and caches
+/failure-memory
+/failure-memory.exe
+/.gocache/
 
 # Build and generated plugin artifacts
 /build/
@@ -45,6 +47,7 @@ coverage.xml
 /.adapters/
 /.models/
 /.cache/
+*.onnx
 
 # Local logs and process files
 *.log
