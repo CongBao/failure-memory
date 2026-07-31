@@ -38,7 +38,7 @@ lesson automatically.
 
 | Agent or harness | Support | Installation |
 | --- | --- | --- |
-| OpenAI Codex | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
+| OpenAI Codex | Plugin, skills, and MCP tools | Public GitHub marketplace |
 | Claude Code | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
 | GitHub Copilot CLI | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
 | Cursor | Plugin, skills, hooks, and MCP tools | Local plugin or team marketplace |
@@ -102,6 +102,36 @@ ln -s "$PWD/failure-memory" ~/.cursor/plugins/local/failure-memory
 
 Restart Cursor or run **Developer: Reload Window**. Teams and Enterprise users can also
 import this repository from **Dashboard → Plugins → Add Marketplace**.
+
+### Duplicate-safe multi-agent setup
+
+Repository checkouts and release bundles include an installer that inspects the stable
+plugin identity in each host before changing anything. It reports `install`, `update`,
+`noop`, or `conflict`; repeated targets are collapsed and a conflict is never overwritten.
+
+Preview changes:
+
+```bash
+python3 scripts/install_harness.py \
+  --target codex \
+  --target claude-code \
+  --target copilot \
+  --target cursor
+```
+
+Apply the same plan:
+
+```bash
+python3 scripts/install_harness.py \
+  --target codex \
+  --target claude-code \
+  --target copilot \
+  --target cursor \
+  --apply
+```
+
+Only include hosts installed on the current machine. Every host reports the same
+`global_store` path. The installer never creates a harness-specific memory database.
 
 ## How to use it
 
@@ -180,7 +210,54 @@ That lesson was a false positive for this task. Record that outcome.
 Failure Memory stores append-only recall attempts, candidates, selections, outcomes,
 false positives, and missed-relevant feedback. It does not store raw recall prompts.
 
-### 5. Check health and learning metrics
+### 5. Review broader lesson proposals
+
+Semantic clustering only proposes groups; it cannot merge lessons. A proposal becomes
+eligible for the weak cluster recall channel only after an append-only human or agent
+review explicitly accepts it.
+
+List pending and reviewed proposals:
+
+```bash
+uv run failure-memory learning proposals
+```
+
+From a repository checkout with `uv`, append a decision from a JSON file:
+
+```bash
+uv run failure-memory learning review --input review.json
+```
+
+For example:
+
+```json
+{
+  "proposal_id": "lgp_example",
+  "decision": "accept",
+  "rationale_code": "reviewed_shared_invariant"
+}
+```
+
+Use `accept`, `reject`, or `defer` and include a machine-readable rationale code. The
+proposal retains its original supporting lesson-version IDs. An accepted review may also
+include one broader **proposed** lesson; source lessons and incidents stay unchanged. A
+terminal accept or reject cannot be rewritten.
+
+### 6. Run the offline learning evaluation
+
+The release includes a synthetic corpus that checks failure qualification, exact,
+lexical, semantic, hybrid, reviewed-cluster, and negative no-injection behavior. Run it
+from a repository checkout with `uv`:
+
+```bash
+uv run failure-memory learning evaluate --corpus evals/v0.5-core.json
+```
+
+Reports are written under the private Failure Memory data root, not the repository. A
+passing report is evidence only: its state remains `shadow` and it never activates
+production feedback ranking.
+
+### 7. Check health and learning metrics
 
 Example prompts:
 

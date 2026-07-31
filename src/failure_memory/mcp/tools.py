@@ -11,6 +11,7 @@ from failure_memory.domain.capture import (
     ExpectationSource,
     ReasonCode,
 )
+from failure_memory.domain.learning import GeneralizationProposalDecision
 from failure_memory.domain.records import (
     IncidentLessonRelation,
     LessonState,
@@ -317,7 +318,10 @@ def _recall_candidate_schema() -> Schema:
             ),
             "channels": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["exact", "lexical", "semantic"]},
+                "items": {
+                    "type": "string",
+                    "enum": ["exact", "lexical", "semantic", "cluster"],
+                },
                 "minItems": 1,
                 "uniqueItems": True,
             },
@@ -326,6 +330,17 @@ def _recall_candidate_schema() -> Schema:
             "lexical_rank": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]},
             "semantic_rank": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]},
             "vector_distance": {"oneOf": [{"type": "null"}, {"type": "number"}]},
+            "cluster_review_id": {
+                "oneOf": [{"type": "null"}, _DRAFT_STRING],
+            },
+            "cluster_key": {
+                "oneOf": [{"type": "null"}, _DRAFT_STRING],
+            },
+            "cluster_supporting_lesson_version_ids": {
+                "type": "array",
+                "items": _DRAFT_STRING,
+                "uniqueItems": True,
+            },
         },
         [
             "lesson",
@@ -336,6 +351,9 @@ def _recall_candidate_schema() -> Schema:
             "lexical_rank",
             "semantic_rank",
             "vector_distance",
+            "cluster_review_id",
+            "cluster_key",
+            "cluster_supporting_lesson_version_ids",
         ],
     )
 
@@ -370,6 +388,57 @@ def _recall_input_schema() -> Schema:
         {"required": ["text", "component"]},
     ]
     return schema
+
+
+def _generalization_proposal_schema() -> Schema:
+    return _object_schema(
+        {
+            "proposal_id": _DRAFT_STRING,
+            "cluster_run_id": _DRAFT_STRING,
+            "cluster_key": _DRAFT_STRING,
+            "supporting_lesson_version_ids": {
+                "type": "array",
+                "items": _DRAFT_STRING,
+                "minItems": 2,
+                "uniqueItems": True,
+            },
+            "counterexample_lesson_version_ids": {
+                "type": "array",
+                "items": _DRAFT_STRING,
+                "uniqueItems": True,
+            },
+            "status": {
+                "type": "string",
+                "enum": ["proposed", "accepted", "rejected", "deferred"],
+            },
+            "latest_review_id": {
+                "oneOf": [{"type": "null"}, _DRAFT_STRING],
+            },
+        },
+        [
+            "proposal_id",
+            "cluster_run_id",
+            "cluster_key",
+            "supporting_lesson_version_ids",
+            "counterexample_lesson_version_ids",
+            "status",
+            "latest_review_id",
+        ],
+    )
+
+
+def _generalized_lesson_input_schema() -> Schema:
+    return _object_schema(
+        {
+            "expected_invariant": _DRAFT_STRING,
+            "controllable_cause": _DRAFT_STRING,
+            "lesson": _object_schema(
+                _LESSON_DRAFT_PROPERTIES,
+                _LESSON_DRAFT_REQUIRED,
+            ),
+        },
+        ["expected_invariant", "controllable_cause", "lesson"],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -854,6 +923,100 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
                     "cluster_count",
                     "clusters",
                     "automatic_merge",
+                ],
+            )
+        ),
+        annotations=_annotations(read_only=False, idempotent=False),
+    ),
+    ToolDefinition(
+        name="list_failure_generalization_proposals",
+        description=("List proposal-only lesson clusters and their latest explicit review state."),
+        input_schema=_object_schema({}, []),
+        output_schema=_tool_output_schema(
+            _object_schema(
+                {
+                    "scope": {"type": "string", "const": "global_personal"},
+                    "proposals": {
+                        "type": "array",
+                        "items": _generalization_proposal_schema(),
+                    },
+                },
+                ["scope", "proposals"],
+            )
+        ),
+        annotations=_annotations(read_only=True),
+    ),
+    ToolDefinition(
+        name="review_failure_generalization_proposal",
+        description=(
+            "Append an accept, reject, or defer review for one lesson-cluster "
+            "proposal; acceptance never merges or verifies source lessons."
+        ),
+        input_schema={
+            **_object_schema(
+                {
+                    "proposal_id": _DRAFT_STRING,
+                    "decision": {
+                        "type": "string",
+                        "enum": [member.value for member in GeneralizationProposalDecision],
+                    },
+                    "rationale_code": _DRAFT_STRING,
+                    "generalized_lesson": _generalized_lesson_input_schema(),
+                },
+                ["proposal_id", "decision", "rationale_code"],
+            ),
+            "allOf": [
+                {
+                    "if": {"required": ["generalized_lesson"]},
+                    "then": {
+                        "properties": {
+                            "decision": {"const": "accept"},
+                        }
+                    },
+                }
+            ],
+        },
+        output_schema=_tool_output_schema(
+            _object_schema(
+                {
+                    "review_id": _DRAFT_STRING,
+                    "proposal_id": _DRAFT_STRING,
+                    "prior_review_id": {
+                        "oneOf": [{"type": "null"}, _DRAFT_STRING],
+                    },
+                    "decision": {
+                        "type": "string",
+                        "enum": [member.value for member in GeneralizationProposalDecision],
+                    },
+                    "rationale_code": _DRAFT_STRING,
+                    "supporting_lesson_version_ids": {
+                        "type": "array",
+                        "items": _DRAFT_STRING,
+                        "minItems": 2,
+                        "uniqueItems": True,
+                    },
+                    "counterexample_lesson_version_ids": {
+                        "type": "array",
+                        "items": _DRAFT_STRING,
+                        "uniqueItems": True,
+                    },
+                    "resulting_lesson_version_id": {
+                        "oneOf": [{"type": "null"}, _DRAFT_STRING],
+                    },
+                    "automatic_merge": {"type": "boolean", "const": False},
+                    "production_activated": {"type": "boolean", "const": False},
+                },
+                [
+                    "review_id",
+                    "proposal_id",
+                    "prior_review_id",
+                    "decision",
+                    "rationale_code",
+                    "supporting_lesson_version_ids",
+                    "counterexample_lesson_version_ids",
+                    "resulting_lesson_version_id",
+                    "automatic_merge",
+                    "production_activated",
                 ],
             )
         ),

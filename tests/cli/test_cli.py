@@ -172,6 +172,210 @@ def test_cluster_proposal_without_semantic_adapter_is_an_actionable_setup_error(
     assert "adapters install" in completed.stderr
 
 
+def test_learning_proposals_lists_reviewable_clusters_as_machine_json(
+    tmp_path: Path,
+) -> None:
+    completed = _run_cli(tmp_path / "data", "learning", "proposals")
+
+    assert completed.returncode == 0, completed.stderr
+    assert _json_stdout(completed) == {
+        "scope": "global_personal",
+        "proposals": [],
+    }
+
+
+def test_offline_learning_evaluation_is_private_shadow_evidence_only(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "data"
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "tiny-public-synthetic",
+                "version": "1",
+                "capture_cases": [
+                    {
+                        "id": "requirement-update",
+                        "candidate": _candidate(),
+                        "expected_decision": "reject",
+                        "negative": True,
+                    },
+                    {
+                        "id": "real-failure",
+                        "candidate": _candidate(
+                            summary="A migration skipped its established preflight.",
+                            classification="real_failure",
+                            expectation_source="accepted_design",
+                            expectation_established_at=(NOW - timedelta(minutes=1)).isoformat(),
+                        ),
+                        "expected_decision": "accept",
+                        "negative": False,
+                    },
+                ],
+                "recall_cases": [
+                    {
+                        "id": "hybrid-positive",
+                        "lexical": ["lesson-a"],
+                        "semantic": ["lesson-a"],
+                        "accepted_clusters": [],
+                        "relevant": ["lesson-a"],
+                        "top_k": 3,
+                        "negative": False,
+                    },
+                    {
+                        "id": "negative-no-injection",
+                        "lexical": [],
+                        "semantic": [],
+                        "accepted_clusters": [],
+                        "relevant": [],
+                        "top_k": 3,
+                        "negative": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_cli(
+        home,
+        "learning",
+        "evaluate",
+        "--corpus",
+        str(corpus),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = _json_stdout(completed)
+    assert result["state"] == "shadow"
+    assert result["corpus_name"] == "tiny-public-synthetic"
+    assert result["case_count"] == 4
+    assert result["negative_case_count"] == 2
+    assert result["production_activated"] is False
+    assert result["passed"] is False
+    assert result["threshold_failures"] == [
+        "minimum_case_count",
+        "minimum_negative_case_count",
+    ]
+    assert result["metrics"] == {
+        "capture_accuracy": 1.0,
+        "requirement_update_false_positive_count": 0,
+        "precision_at_1": 1.0,
+        "precision_at_3": 1.0,
+        "negative_no_injection_accuracy": 1.0,
+    }
+    evaluation_root = home / "adapters" / "evaluation" / "offline"
+    reports = list(evaluation_root.glob("*/report.json"))
+    assert len(reports) == 1
+    if os.name != "nt":
+        assert stat.S_IMODE(reports[0].stat().st_mode) == 0o600
+    assert str(corpus) not in reports[0].read_text(encoding="utf-8")
+
+
+def test_offline_learning_evaluation_rejects_unsafe_corpus_metadata(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "../private report",
+                "version": "1",
+                "capture_cases": [],
+                "recall_cases": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_cli(
+        tmp_path / "data",
+        "learning",
+        "evaluate",
+        "--corpus",
+        str(corpus),
+    )
+
+    assert completed.returncode == 2
+    assert _json_stdout(completed)["error"]["code"] == "operation_rejected"
+
+
+def test_offline_learning_evaluation_rejects_duplicate_case_ids(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "duplicate-case-corpus",
+                "version": "1",
+                "capture_cases": [
+                    {
+                        "id": "duplicate",
+                        "candidate": _candidate(),
+                        "expected_decision": "reject",
+                        "negative": True,
+                    }
+                ],
+                "recall_cases": [
+                    {
+                        "id": "duplicate",
+                        "lexical": [],
+                        "semantic": [],
+                        "accepted_clusters": [],
+                        "relevant": [],
+                        "top_k": 3,
+                        "negative": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_cli(
+        tmp_path / "data",
+        "learning",
+        "evaluate",
+        "--corpus",
+        str(corpus),
+    )
+
+    assert completed.returncode == 2
+    assert _json_stdout(completed)["error"]["code"] == "operation_rejected"
+
+
+def test_checked_in_core_corpus_meets_shadow_thresholds(tmp_path: Path) -> None:
+    corpus = Path(__file__).parents[2] / "evals" / "v0.5-core.json"
+
+    completed = _run_cli(
+        tmp_path / "data",
+        "learning",
+        "evaluate",
+        "--corpus",
+        str(corpus),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = _json_stdout(completed)
+    assert result["case_count"] == 52
+    assert result["negative_case_count"] == 21
+    assert result["passed"] is True
+    assert result["threshold_failures"] == []
+    assert result["production_activated"] is False
+    assert result["metrics"] == {
+        "capture_accuracy": 1.0,
+        "requirement_update_false_positive_count": 0,
+        "precision_at_1": 26 / 30,
+        "precision_at_3": 1.0,
+        "negative_no_injection_accuracy": 1.0,
+    }
+
+
 def _record(capture_attempt_id: str) -> dict[str, object]:
     return {
         "capture_attempt_id": capture_attempt_id,

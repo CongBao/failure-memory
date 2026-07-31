@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PLUGIN_NAME = "failure-memory"
-SUPPORTED_TARGETS = ("codex", "copilot")
+SUPPORTED_TARGETS = ("codex", "claude-code", "copilot", "cursor")
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,15 +25,20 @@ class HostState:
     desired_version: str
     installed_build_commit: str | None
     desired_build_commit: str | None
+    marketplace_present: bool = False
+    managed_projection: bool = True
+    installed_identities: tuple[str, ...] = ()
 
     @property
     def action(self) -> str:
         if len(self.installed_versions) > 1:
             return "conflict"
+        if not self.managed_projection and self.installed_versions != (self.desired_version,):
+            return "conflict"
         if self.installed_versions != (self.desired_version,):
             return "install" if not self.installed_versions else "update"
         if (
-            self.target == "copilot"
+            self.target in {"copilot", "cursor"}
             and self.installed_build_commit is not None
             and self.desired_build_commit is not None
             and self.installed_build_commit != self.desired_build_commit
@@ -45,7 +51,7 @@ class HostState:
     @property
     def same_version_content_update(self) -> bool:
         return (
-            self.target == "copilot"
+            self.target in {"copilot", "cursor"}
             and self.installed_versions == (self.desired_version,)
             and self.installed_build_commit is not None
             and self.desired_build_commit is not None
@@ -82,11 +88,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _manifest_version(bundle: Path, target: str) -> str:
-    location = (
-        bundle / ".codex-plugin" / "plugin.json"
-        if target == "codex"
-        else bundle / ".plugin" / "plugin.json"
-    )
+    manifest_directories = {
+        "codex": ".codex-plugin",
+        "claude-code": ".claude-plugin",
+        "copilot": ".plugin",
+        "cursor": ".cursor-plugin",
+    }
+    location = bundle / manifest_directories[target] / "plugin.json"
     value = json.loads(location.read_text(encoding="utf-8"))
     if value.get("name") != PLUGIN_NAME or not isinstance(value.get("version"), str):
         raise ValueError(f"invalid {target} plugin manifest")
@@ -106,6 +114,10 @@ def _copilot_install_root() -> Path:
     return Path.home() / ".copilot" / "installed-plugins" / "_direct" / PLUGIN_NAME
 
 
+def _cursor_install_root() -> Path:
+    return Path.home() / ".cursor" / "plugins" / "local" / PLUGIN_NAME
+
+
 def _run(executable: str, *arguments: str, check: bool = True) -> str:
     result = subprocess.run(
         [executable, *arguments],
@@ -119,36 +131,151 @@ def _run(executable: str, *arguments: str, check: bool = True) -> str:
     return result.stdout
 
 
-def _installed_versions(target: str, executable: str) -> tuple[str, ...]:
-    output = _run(executable, "plugin", "list")
+def _installed_plugins(target: str, executable: str) -> tuple[tuple[str, str], ...]:
+    output = _run(
+        executable,
+        "plugin",
+        "list",
+        *(("--json",) if target in {"codex", "claude-code"} else ()),
+    )
     if target == "codex":
-        versions = []
-        for line in output.splitlines():
-            columns = re.split(r"\s{2,}", line.strip())
-            if columns and columns[0].startswith(f"{PLUGIN_NAME}@") and len(columns) >= 3:
-                versions.append(columns[2])
-    else:
-        versions = re.findall(
-            rf"^\s*[•*]?\s*{re.escape(PLUGIN_NAME)}(?:@\S+)?\s+\(v([^)]+)\)",
+        try:
+            value = json.loads(output)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("codex plugin list did not return valid JSON") from error
+        installed = value.get("installed") if isinstance(value, dict) else None
+        if not isinstance(installed, list):
+            raise RuntimeError("codex plugin list has an unsupported JSON shape")
+        plugins = []
+        for item in installed:
+            if not isinstance(item, dict) or item.get("name") != PLUGIN_NAME:
+                continue
+            identity = item.get("pluginId")
+            version = item.get("version")
+            if isinstance(identity, str) and isinstance(version, str):
+                plugins.append((identity, version))
+        return tuple(plugins)
+    if target == "copilot":
+        matches = re.findall(
+            rf"^\s*[•*]?\s*({re.escape(PLUGIN_NAME)}(?:@\S+)?)\s+\(v([^)]+)\)",
             output,
             flags=re.MULTILINE,
         )
-    return tuple(versions)
+        return tuple((identity, version) for identity, version in matches)
+    return tuple(_claude_plugins(output))
+
+
+def _installed_versions(target: str, executable: str) -> tuple[str, ...]:
+    return tuple(version for _identity, version in _installed_plugins(target, executable))
+
+
+def _installed_identities(target: str, executable: str) -> tuple[str, ...]:
+    return tuple(identity for identity, _version in _installed_plugins(target, executable))
+
+
+def _claude_plugins(output: str) -> list[tuple[str, str]]:
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("claude plugin list did not return valid JSON") from error
+    plugins: list[tuple[str, str]] = []
+
+    def collect(item: object) -> None:
+        if isinstance(item, list):
+            for nested in item:
+                collect(nested)
+            return
+        if not isinstance(item, dict):
+            return
+        identity = next(
+            (item.get(key) for key in ("id", "name", "plugin") if isinstance(item.get(key), str)),
+            None,
+        )
+        version = item.get("version")
+        if (
+            isinstance(identity, str)
+            and identity.split("@", 1)[0] == PLUGIN_NAME
+            and isinstance(version, str)
+            and version
+        ):
+            plugins.append((identity, version))
+            return
+        for nested in item.values():
+            collect(nested)
+
+    collect(value)
+    return plugins
+
+
+def _marketplace_present(target: str, executable: str) -> bool:
+    output = _run(executable, "plugin", "marketplace", "list", "--json")
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{target} marketplace list did not return valid JSON") from error
+
+    def contains(item: object) -> bool:
+        if isinstance(item, list):
+            return any(contains(nested) for nested in item)
+        if not isinstance(item, dict):
+            return False
+        if item.get("name") == PLUGIN_NAME or PLUGIN_NAME in item:
+            return True
+        return any(contains(nested) for nested in item.values())
+
+    return contains(value)
+
+
+def _cursor_state(bundle: Path) -> HostState:
+    root = _cursor_install_root()
+    installed = root.exists() or root.is_symlink()
+    managed = not installed or root.is_symlink()
+    versions: tuple[str, ...] = ()
+    if installed:
+        try:
+            versions = (_manifest_version(root, "cursor"),)
+        except (OSError, ValueError, json.JSONDecodeError):
+            versions = ("unmanaged",)
+            managed = False
+    return HostState(
+        target="cursor",
+        executable="",
+        installed_versions=versions,
+        desired_version=_manifest_version(bundle, "cursor"),
+        installed_build_commit=_build_commit(root) if installed else None,
+        desired_build_commit=_build_commit(bundle),
+        managed_projection=managed,
+        installed_identities=((PLUGIN_NAME,) if installed else ()),
+    )
 
 
 def _state(bundle: Path, target: str) -> HostState:
-    executable = shutil.which(target) if target == "codex" else shutil.which("copilot")
+    if target == "cursor":
+        return _cursor_state(bundle)
+    executable_name = {
+        "codex": "codex",
+        "claude-code": "claude",
+        "copilot": "copilot",
+    }[target]
+    executable = shutil.which(executable_name)
     if executable is None:
         raise RuntimeError(f"{target} executable is not installed")
+    installed_plugins = _installed_plugins(target, executable)
     return HostState(
         target=target,
         executable=executable,
-        installed_versions=_installed_versions(target, executable),
+        installed_versions=tuple(version for _identity, version in installed_plugins),
         desired_version=_manifest_version(bundle, target),
         installed_build_commit=(
             _build_commit(_copilot_install_root()) if target == "copilot" else None
         ),
         desired_build_commit=_build_commit(bundle),
+        marketplace_present=(
+            _marketplace_present(target, executable)
+            if target in {"codex", "claude-code"}
+            else False
+        ),
+        installed_identities=tuple(identity for identity, _version in installed_plugins),
     )
 
 
@@ -156,13 +283,90 @@ def _apply(bundle: Path, state: HostState) -> None:
     if state.action == "noop":
         return
     if state.action == "conflict":
-        raise RuntimeError(
-            f"{state.target} has duplicate {PLUGIN_NAME} installations; resolve them first"
+        detail = (
+            "duplicate installations"
+            if len(state.installed_versions) > 1
+            else "an unmanaged conflicting projection"
         )
+        raise RuntimeError(f"{state.target} has {detail}; resolve it first")
+    if state.target == "cursor":
+        destination = _cursor_install_root()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.parent / f".{PLUGIN_NAME}.new"
+        if temporary.exists() or temporary.is_symlink():
+            raise RuntimeError(f"stale Cursor projection exists at {temporary}")
+        temporary.symlink_to(bundle, target_is_directory=True)
+        try:
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return
+    if state.target == "claude-code":
+        identity = (
+            state.installed_identities[0]
+            if state.installed_identities
+            else f"{PLUGIN_NAME}@failure-memory"
+        )
+        if state.action == "install":
+            if not state.marketplace_present:
+                _run(
+                    state.executable,
+                    "plugin",
+                    "marketplace",
+                    "add",
+                    str(bundle),
+                )
+            _run(
+                state.executable,
+                "plugin",
+                "install",
+                identity,
+                "--scope",
+                "user",
+            )
+            return
+        marketplace = identity.partition("@")[2]
+        _run(
+            state.executable,
+            "plugin",
+            "marketplace",
+            "update",
+            marketplace,
+        )
+        _run(
+            state.executable,
+            "plugin",
+            "update",
+            identity,
+            "--scope",
+            "user",
+        )
+        return
     if state.target == "codex":
-        identity = f"{PLUGIN_NAME}@personal"
+        identity = (
+            state.installed_identities[0]
+            if state.installed_identities
+            else f"{PLUGIN_NAME}@failure-memory"
+        )
         if state.action == "update":
+            marketplace = identity.partition("@")[2]
+            if marketplace != "personal":
+                _run(
+                    state.executable,
+                    "plugin",
+                    "marketplace",
+                    "update",
+                    marketplace,
+                )
             _run(state.executable, "plugin", "remove", identity)
+        elif not state.marketplace_present:
+            _run(
+                state.executable,
+                "plugin",
+                "marketplace",
+                "add",
+                str(bundle),
+            )
         _run(state.executable, "plugin", "add", identity)
         return
     if state.same_version_content_update:
@@ -214,6 +418,9 @@ def main() -> int:
                 "desired_build_commit": state.desired_build_commit,
                 "action": state.action,
                 "duplicate_installation": len(state.installed_versions) > 1,
+                "marketplace_present": state.marketplace_present,
+                "managed_projection": state.managed_projection,
+                "installed_identities": list(state.installed_identities),
             }
             for state in states
         ],

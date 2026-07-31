@@ -31,11 +31,13 @@ def test_tools_publish_the_public_operations() -> None:
         "transition_failure_lesson",
         "run_failure_ranking_experiment",
         "propose_failure_lesson_clusters",
+        "list_failure_generalization_proposals",
+        "review_failure_generalization_proposal",
         "failure_memory_setup_status",
         "failure_memory_doctor",
     )
 
-    assert len(TOOLS) == 17
+    assert len(TOOLS) == 19
     assert tuple(tool.name for tool in TOOLS) == expected
     assert {tool.name for tool in TOOLS} == set(expected)
 
@@ -72,6 +74,7 @@ def test_all_tools_publish_object_schemas_and_safe_annotations() -> None:
         "transition_failure_lesson",
         "run_failure_ranking_experiment",
         "propose_failure_lesson_clusters",
+        "review_failure_generalization_proposal",
     }
 
     for tool in TOOLS:

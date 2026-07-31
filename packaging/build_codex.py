@@ -38,6 +38,7 @@ ALLOWED_ROOT_DIRECTORIES = frozenset(
         ".codex-plugin",
         ".cursor-plugin",
         ".plugin",
+        "evals",
         "hooks",
         "scripts",
         "skills",

@@ -4,7 +4,7 @@ import hashlib
 import os
 import sqlite3
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from failure_memory.adapters.dependency_runtime.manager import AdapterRuntimeManager
+from failure_memory.adapters.evaluation.offline import run_offline_evaluation
 from failure_memory.adapters.event_store.sqlite.connection import (
     connect_sqlite,
     secure_sqlite_files,
@@ -30,7 +31,13 @@ from failure_memory.adapters.storage_permissions import ensure_private_tree
 from failure_memory.application.errors import SemanticSetupRequiredError, StorageBusyError
 from failure_memory.application.redaction import RedactionResult, redact_text
 from failure_memory.domain.capture import CaptureAssessment, FailureCandidate
-from failure_memory.domain.learning import GeneralizationRecommendation, LessonCluster
+from failure_memory.domain.learning import (
+    GeneralizationProposalDecision,
+    GeneralizationRecommendation,
+    GeneralizedLessonDraft,
+    LessonCluster,
+    ReviewedLessonCluster,
+)
 from failure_memory.domain.policy import evaluate_candidate
 from failure_memory.domain.records import (
     IncidentDraft,
@@ -382,6 +389,12 @@ class FailureMemoryService:
             document_by_id,
             limit=search_limit,
         )
+        ranked_candidates = _expand_reviewed_clusters(
+            ranked_candidates,
+            self.store.list_accepted_lesson_clusters(),
+            document_by_id,
+            limit=search_limit,
+        )
         candidates = ranked_candidates[: safe_query.top_k]
         status = (
             RecallStatus.DEGRADED
@@ -525,6 +538,85 @@ class FailureMemoryService:
             "automatic_merge": False,
         }
 
+    def list_lesson_generalization_proposals(
+        self,
+    ) -> tuple[Mapping[str, object], ...]:
+        return tuple(
+            {
+                "proposal_id": proposal.id,
+                "cluster_run_id": proposal.cluster_run_id,
+                "cluster_key": proposal.cluster_key,
+                "supporting_lesson_version_ids": list(proposal.supporting_lesson_version_ids),
+                "counterexample_lesson_version_ids": list(
+                    proposal.counterexample_lesson_version_ids
+                ),
+                "status": proposal.status,
+                "latest_review_id": proposal.latest_review_id,
+            }
+            for proposal in self.store.list_lesson_generalization_proposals()
+        )
+
+    def review_lesson_generalization_proposal(
+        self,
+        proposal_id: str,
+        decision: GeneralizationProposalDecision,
+        rationale_code: str,
+        generalized_lesson: GeneralizedLessonDraft | None = None,
+    ) -> Mapping[str, object]:
+        safe_generalized_lesson: GeneralizedLessonDraft | None = None
+        redaction_results: tuple[RedactionResult, ...] = ()
+        if generalized_lesson is not None:
+            expected_invariant = redact_text(generalized_lesson.expected_invariant)
+            controllable_cause = redact_text(generalized_lesson.controllable_cause)
+            safe_lesson, lesson_redactions = _redact_lesson(generalized_lesson.lesson)
+            safe_generalized_lesson = GeneralizedLessonDraft(
+                expected_invariant=expected_invariant.text,
+                controllable_cause=controllable_cause.text,
+                lesson=safe_lesson,
+            )
+            redaction_results = (
+                expected_invariant,
+                controllable_cause,
+                *lesson_redactions,
+            )
+        review = self.store.review_lesson_generalization_proposal(
+            proposal_id,
+            decision,
+            rationale_code,
+            self.context,
+            created_at=self.clock(),
+            redaction_state=_redaction_state(*redaction_results),
+            generalized_lesson=safe_generalized_lesson,
+        )
+        return {
+            "review_id": review.id,
+            "proposal_id": review.proposal_id,
+            "prior_review_id": review.prior_review_id,
+            "decision": review.decision.value,
+            "rationale_code": review.rationale_code,
+            "supporting_lesson_version_ids": list(review.supporting_lesson_version_ids),
+            "counterexample_lesson_version_ids": list(review.counterexample_lesson_version_ids),
+            "resulting_lesson_version_id": review.resulting_lesson_version_id,
+            "automatic_merge": False,
+            "production_activated": False,
+        }
+
+    def run_offline_learning_evaluation(
+        self,
+        corpus_path: Path,
+    ) -> Mapping[str, object]:
+        created_at = self.clock()
+        report = run_offline_evaluation(
+            corpus_path,
+            self.context.data_root,
+            created_at=created_at,
+        )
+        self.store.append_learning_evaluation_run(
+            report,
+            created_at=created_at,
+        )
+        return report
+
     def store_status(self) -> Mapping[str, object]:
         if self.store_importer is None:
             return {
@@ -606,6 +698,9 @@ class FailureMemoryService:
             "recall_telemetry",
             "learning_metrics",
             "tier_two_generalization_review",
+            "generalization_proposal_review",
+            "reviewed_cluster_recall",
+            "offline_shadow_evaluation",
         ]
         available.append("bounded_session_hook")
         unavailable = ["production_feedback_ranking"]
@@ -941,6 +1036,63 @@ def _fuse_matches(
         if len(candidates) == limit:
             break
     return tuple(candidates)
+
+
+def _expand_reviewed_clusters(
+    ranked_candidates: tuple[RecallCandidate, ...],
+    clusters: Sequence[ReviewedLessonCluster],
+    documents: Mapping[str, RetrievalDocument],
+    *,
+    limit: int,
+) -> tuple[RecallCandidate, ...]:
+    if not ranked_candidates or len(ranked_candidates) >= limit:
+        return ranked_candidates[:limit]
+    ranked_by_id = {candidate.lesson.id: candidate for candidate in ranked_candidates}
+    additions: list[RecallCandidate] = []
+    added_ids: set[str] = set()
+    for cluster in clusters:
+        members = set(cluster.supporting_lesson_version_ids)
+        if cluster.resulting_lesson_version_id is not None:
+            members.add(cluster.resulting_lesson_version_id)
+        seed_scores = [
+            ranked_by_id[lesson_version_id].score
+            for lesson_version_id in members
+            if lesson_version_id in ranked_by_id
+        ]
+        if not seed_scores:
+            continue
+        eligible = sorted(
+            lesson_version_id
+            for lesson_version_id in members
+            if lesson_version_id not in ranked_by_id
+            and lesson_version_id not in added_ids
+            and lesson_version_id in documents
+        )
+        if not eligible:
+            continue
+        lesson_version_id = eligible[0]
+        document = documents[lesson_version_id]
+        additions.append(
+            RecallCandidate(
+                lesson=document.lesson_version,
+                expected_invariant=document.expected_invariant,
+                controllable_cause=document.controllable_cause,
+                outcome_summary=document.outcome_summary,
+                channels=("cluster",),
+                score=max(seed_scores) * 0.25,
+                exact=False,
+                cluster_review_id=cluster.review_id,
+                cluster_key=cluster.cluster_key,
+                cluster_supporting_lesson_version_ids=tuple(
+                    sorted(cluster.supporting_lesson_version_ids)
+                ),
+            )
+        )
+        added_ids.add(lesson_version_id)
+        if len(ranked_candidates) + len(additions) >= limit:
+            break
+    additions.sort(key=lambda candidate: (-candidate.score, candidate.lesson.id))
+    return (*ranked_candidates, *additions)[:limit]
 
 
 def _retrieval_status_payload(index: RetrievalIndexPort) -> dict[str, object]:

@@ -17,7 +17,11 @@ from failure_memory.domain.capture import (
     ExpectationSource,
     FailureCandidate,
 )
-from failure_memory.domain.learning import SimilarityPair
+from failure_memory.domain.learning import (
+    GeneralizationProposalDecision,
+    GeneralizedLessonDraft,
+    SimilarityPair,
+)
 from failure_memory.domain.records import IncidentDraft, LessonDraft
 from failure_memory.domain.retrieval import (
     RecallMode,
@@ -26,6 +30,7 @@ from failure_memory.domain.retrieval import (
     RecallQuery,
     RecallStatus,
     RetrievalIndexStatus,
+    RetrievalMatch,
     RetrievalProfile,
 )
 
@@ -34,6 +39,9 @@ NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
 
 class _ProposalIndex:
     profile_name = "proposal-test"
+
+    def __init__(self) -> None:
+        self.documents: tuple[object, ...] = ()
 
     @property
     def profile(self) -> RetrievalProfile:
@@ -54,8 +62,39 @@ class _ProposalIndex:
         )
 
     def sync(self, documents: object) -> int:
-        del documents
+        self.documents = tuple(documents)  # type: ignore[arg-type]
         return 0
+
+    def search_lexical(
+        self,
+        query: object,
+        *,
+        limit: int,
+    ) -> tuple[RetrievalMatch, ...]:
+        del query, limit
+        matching = [
+            document
+            for document in self.documents
+            if "migration" in document.lesson_version.draft.title.casefold()  # type: ignore[union-attr]
+        ]
+        return tuple(
+            RetrievalMatch(
+                lesson_version_id=document.lesson_version.id,  # type: ignore[union-attr]
+                channel="lexical",
+                rank=rank,
+                score=1.0,
+            )
+            for rank, document in enumerate(matching, start=1)
+        )
+
+    def search_semantic(
+        self,
+        query: object,
+        *,
+        limit: int,
+    ) -> tuple[RetrievalMatch, ...]:
+        del query, limit
+        return ()
 
     def similar_pairs(
         self, documents: object, *, distance_threshold: float
@@ -418,3 +457,221 @@ def test_semantic_clustering_records_proposals_without_merging_lessons(
         ).fetchone()[0]
         == 1
     )
+
+
+def test_reviewed_cluster_acceptance_is_append_only_and_does_not_merge_sources(
+    recall_service: FailureMemoryService,
+) -> None:
+    first_lesson_version_id = _record_migration_lesson(recall_service)
+    evaluated = recall_service.evaluate_failure_candidate(_candidate())
+    second = recall_service.record_failure_incident(
+        evaluated.capture_attempt_id,
+        IncidentDraft(
+            outcome_summary="The invoice ledger omitted one currency.",
+            expected_invariant="Every invoice currency balances before posting.",
+            controllable_cause="The per-currency balance check was skipped.",
+            material_impact="An invoice total was incorrect.",
+            recurrence_risk="Another multi-currency invoice could repeat the error.",
+        ),
+        LessonDraft(
+            title="Balance invoices by currency",
+            rule="Check each currency before posting an invoice.",
+            prevention_action="Run the per-currency balance check.",
+            verification_action="Confirm every currency subtotal is zero.",
+            applicability="Multi-currency invoice posting.",
+            counterexamples="Single-currency read-only reports.",
+        ),
+    )
+    recall_service.retrieval_index = _ProposalIndex()  # type: ignore[assignment]
+    recall_service.propose_lesson_clusters(distance_threshold=0.2)
+    proposal = recall_service.list_lesson_generalization_proposals()[0]
+
+    review = recall_service.review_lesson_generalization_proposal(
+        proposal["proposal_id"],
+        GeneralizationProposalDecision.ACCEPT,
+        "reviewed_related_failures",
+    )
+
+    assert review["decision"] == "accept"
+    assert review["resulting_lesson_version_id"] is None
+    assert review["supporting_lesson_version_ids"] == sorted(
+        [first_lesson_version_id, second.lesson_version_id]
+    )
+    assert recall_service.store.counts()["lesson"] == 2
+    assert recall_service.list_lesson_generalization_proposals()[0]["status"] == "accepted"
+    with pytest.raises(ValueError, match="terminal"):
+        recall_service.review_lesson_generalization_proposal(
+            proposal["proposal_id"],
+            GeneralizationProposalDecision.REJECT,
+            "later_reversal",
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="append-only table"):
+        recall_service.store.connection.execute(
+            """
+            UPDATE lesson_generalization_proposal_review
+            SET rationale_code = 'changed'
+            WHERE id = ?
+            """,
+            (review["review_id"],),
+        )
+
+
+def test_deferred_cluster_can_be_accepted_with_a_new_proposed_generalization(
+    recall_service: FailureMemoryService,
+) -> None:
+    first_lesson_version_id = _record_migration_lesson(recall_service)
+    evaluated = recall_service.evaluate_failure_candidate(_candidate())
+    second = recall_service.record_failure_incident(
+        evaluated.capture_attempt_id,
+        IncidentDraft(
+            outcome_summary="The invoice ledger omitted one currency.",
+            expected_invariant="Every invoice currency balances before posting.",
+            controllable_cause="The per-currency balance check was skipped.",
+            material_impact="An invoice total was incorrect.",
+            recurrence_risk="Another multi-currency invoice could repeat the error.",
+        ),
+        LessonDraft(
+            title="Balance invoices by currency",
+            rule="Check each currency before posting an invoice.",
+            prevention_action="Run the per-currency balance check.",
+            verification_action="Confirm every currency subtotal is zero.",
+            applicability="Multi-currency invoice posting.",
+            counterexamples="Single-currency read-only reports.",
+        ),
+    )
+    recall_service.retrieval_index = _ProposalIndex()  # type: ignore[assignment]
+    recall_service.propose_lesson_clusters(distance_threshold=0.2)
+    proposal_id = recall_service.list_lesson_generalization_proposals()[0]["proposal_id"]
+    assert isinstance(proposal_id, str)
+    deferred = recall_service.review_lesson_generalization_proposal(
+        proposal_id,
+        GeneralizationProposalDecision.DEFER,
+        "needs_broader_wording",
+    )
+
+    accepted = recall_service.review_lesson_generalization_proposal(
+        proposal_id,
+        GeneralizationProposalDecision.ACCEPT,
+        "reviewed_broader_control",
+        GeneralizedLessonDraft(
+            expected_invariant="State-changing operations preserve declared invariants.",
+            controllable_cause="A required preflight validation was skipped.",
+            lesson=LessonDraft(
+                title="Run invariant preflights before writes",
+                rule="Validate declared invariants before state-changing writes.",
+                prevention_action="Run the applicable invariant preflight before writing.",
+                verification_action="Confirm the preflight passes for every affected dimension.",
+                applicability="State-changing migrations and ledger writes.",
+                counterexamples="Read-only diagnostics without state changes.",
+            ),
+        ),
+    )
+
+    resulting_id = accepted["resulting_lesson_version_id"]
+    assert isinstance(resulting_id, str)
+    assert deferred["decision"] == "defer"
+    assert accepted["prior_review_id"] == deferred["review_id"]
+    assert accepted["decision"] == "accept"
+    assert recall_service.store.counts()["lesson"] == 3
+    assert {
+        document.lesson_version.id for document in recall_service.store.list_retrieval_documents()
+    } == {first_lesson_version_id, second.lesson_version_id, resulting_id}
+    source_heads = {
+        first_lesson_version_id,
+        second.lesson_version_id,
+    }
+    assert source_heads <= {
+        str(row["lesson_version_id"])
+        for row in recall_service.store.connection.execute(
+            "SELECT lesson_version_id FROM lesson_head"
+        )
+    }
+    assert (
+        recall_service.store.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM lesson_generalization_source
+            WHERE review_id = ? AND relation = 'supporting'
+            """,
+            (accepted["review_id"],),
+        ).fetchone()[0]
+        == 2
+    )
+
+
+def test_only_an_accepted_review_can_add_one_traceable_cluster_neighbor_to_recall(
+    recall_service: FailureMemoryService,
+) -> None:
+    first_lesson_version_id = _record_migration_lesson(recall_service)
+    evaluated = recall_service.evaluate_failure_candidate(_candidate())
+    second = recall_service.record_failure_incident(
+        evaluated.capture_attempt_id,
+        IncidentDraft(
+            outcome_summary="The invoice ledger omitted one currency.",
+            expected_invariant="Every invoice currency balances before posting.",
+            controllable_cause="The per-currency balance check was skipped.",
+            material_impact="An invoice total was incorrect.",
+            recurrence_risk="Another multi-currency invoice could repeat the error.",
+        ),
+        LessonDraft(
+            title="Balance invoices by currency",
+            rule="Check each currency before posting an invoice.",
+            prevention_action="Run the per-currency balance check.",
+            verification_action="Confirm every currency subtotal is zero.",
+            applicability="Multi-currency invoice posting.",
+            counterexamples="Single-currency read-only reports.",
+        ),
+    )
+    proposal_index = _ProposalIndex()
+    recall_service.retrieval_index = proposal_index
+    recall_service.propose_lesson_clusters(distance_threshold=0.2)
+    proposal = recall_service.list_lesson_generalization_proposals()[0]
+
+    before_review = recall_service.recall_failure_lessons(
+        RecallQuery(
+            mode=RecallMode.LEXICAL,
+            text="Prepare a database schema migration.",
+            component="migration",
+            top_k=3,
+        )
+    )
+    assert [candidate.lesson.id for candidate in before_review.candidates] == [
+        first_lesson_version_id
+    ]
+
+    review = recall_service.review_lesson_generalization_proposal(
+        str(proposal["proposal_id"]),
+        GeneralizationProposalDecision.ACCEPT,
+        "reviewed_related_failures",
+    )
+    after_review = recall_service.recall_failure_lessons(
+        RecallQuery(
+            mode=RecallMode.LEXICAL,
+            text="Prepare a database schema migration.",
+            component="migration",
+            top_k=3,
+        )
+    )
+
+    assert [candidate.lesson.id for candidate in after_review.candidates] == [
+        first_lesson_version_id,
+        second.lesson_version_id,
+    ]
+    cluster_candidate = after_review.candidates[1]
+    assert cluster_candidate.channels == ("cluster",)
+    assert cluster_candidate.cluster_review_id == review["review_id"]
+    assert cluster_candidate.cluster_key == proposal["cluster_key"]
+    assert cluster_candidate.cluster_supporting_lesson_version_ids == tuple(
+        sorted([first_lesson_version_id, second.lesson_version_id])
+    )
+    stored = recall_service.store.connection.execute(
+        """
+        SELECT cluster_review_id, cluster_key, cluster_supporting_lesson_version_ids_json
+        FROM recall_candidate
+        WHERE recall_attempt_id = ? AND lesson_version_id = ?
+        """,
+        (after_review.attempt_id, second.lesson_version_id),
+    ).fetchone()
+    assert stored is not None
+    assert stored["cluster_review_id"] == review["review_id"]
+    assert stored["cluster_key"] == proposal["cluster_key"]

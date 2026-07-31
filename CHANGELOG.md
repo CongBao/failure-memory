@@ -7,15 +7,27 @@ use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-31
+
 ### Added
 
 - Public GitHub marketplace catalogs for Codex, Claude Code, and GitHub Copilot CLI.
+- Append-only accept, reject, and defer reviews for lesson-generalization proposals,
+  including optional broader proposed lessons that preserve every source lesson.
+- A weak, traceable recall channel that may add at most one neighbor from an accepted
+  reviewed cluster without merging or promoting lessons.
+- A checked-in 52-case synthetic evaluation corpus and private, append-only shadow
+  evaluation reports with explicit quality thresholds.
+- Duplicate-safe installation inspection and application for Claude Code and Cursor,
+  completing the Codex, Claude Code, Copilot CLI, and Cursor projections.
 
 ### Changed
 
 - Reworked the README around the project's purpose, supported agents, installation, and
   natural-language usage.
 - Added public repository and author metadata to every host plugin manifest.
+- Expanded the MCP surface to nineteen schema-validated operations.
+- Packaged the public synthetic evaluation corpus with release bundles.
 
 ## [0.4.0] - 2026-07-30
 

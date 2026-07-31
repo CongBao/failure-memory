@@ -547,6 +547,9 @@ def test_setup_status_matches_the_bootstrap_capability_contract(
             "recall_telemetry",
             "learning_metrics",
             "tier_two_generalization_review",
+            "generalization_proposal_review",
+            "reviewed_cluster_recall",
+            "offline_shadow_evaluation",
             "bounded_session_hook",
         ],
         "unavailable_capabilities": [

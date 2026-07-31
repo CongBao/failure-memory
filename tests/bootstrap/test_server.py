@@ -179,7 +179,7 @@ def test_initialize_returns_capabilities_and_preserves_empty_string_id() -> None
     assert response["result"] == {
         "protocolVersion": "2025-11-25",
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "failure-memory", "version": "0.4.0"},
+        "serverInfo": {"name": "failure-memory", "version": "0.5.0"},
         "instructions": (
             "Use failure memory only for real failures: an established expectation, "
             "an observed mismatch, and material impact or recurrence risk."
@@ -294,7 +294,7 @@ def test_tools_list_returns_all_immutable_tools_after_initialize() -> None:
 
     assert response is not None
     tools = cast(dict[str, list[dict[str, object]]], response["result"])["tools"]
-    assert len(tools) == 17
+    assert len(tools) == 19
     assert {tool["name"] for tool in tools} == {
         "evaluate_failure_candidate",
         "review_failure_recording",
@@ -311,6 +311,8 @@ def test_tools_list_returns_all_immutable_tools_after_initialize() -> None:
         "transition_failure_lesson",
         "run_failure_ranking_experiment",
         "propose_failure_lesson_clusters",
+        "list_failure_generalization_proposals",
+        "review_failure_generalization_proposal",
         "failure_memory_setup_status",
         "failure_memory_doctor",
     }
@@ -713,7 +715,7 @@ def test_create_local_service_maps_pending_migration_contention_to_busy(
         "_migration_files",
         lambda: [
             *migrations,
-            (6, "0006_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
+            (7, "0007_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
         ],
     )
     real_connect = service_module.connect_sqlite

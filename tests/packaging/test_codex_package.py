@@ -79,6 +79,7 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
         ".mcp.json",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
+        "evals/v0.5-core.json",
         "LICENSE",
         "README.md",
         "SECURITY.md",
@@ -335,16 +336,78 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
         "transition_failure_lesson",
         "run_failure_ranking_experiment",
         "propose_failure_lesson_clusters",
+        "list_failure_generalization_proposals",
+        "review_failure_generalization_proposal",
         "failure_memory_setup_status",
         "failure_memory_doctor",
     ]
-    assert len(tool_names) == len(set(tool_names)) == 17
+    assert len(tool_names) == len(set(tool_names)) == 19
     doctor = responses[2]["result"]["structuredContent"]
     assert doctor["state"] == "lexical_ready"
     assert doctor["integrity_check"] == "ok"
     assert "database_path" not in doctor
     assert str(tmp_path) not in json.dumps(doctor)
     assert _tree_state(output) == state_before
+
+
+def test_fresh_packaged_hosts_share_one_global_store_identity(tmp_path: Path) -> None:
+    output = tmp_path / "bundle" / "failure-memory"
+    _run_builder(output, allow_dirty=True)
+    server = json.loads((output / ".mcp.json").read_text())["mcpServers"]["failure-memory"]
+    runtime = tmp_path / "global-runtime"
+    messages = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "cross-host-test", "version": "1"},
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "failure_memory_doctor", "arguments": {}},
+        },
+    ]
+    store_ids: set[str] = set()
+    for harness in ("codex", "claude-code", "copilot", "cursor"):
+        environment = {
+            **os.environ,
+            **server["env"],
+            "FAILURE_MEMORY_HOME": str(runtime),
+            "FAILURE_MEMORY_HARNESS": harness,
+            "FAILURE_MEMORY_SESSION_ID": f"fresh-{harness}",
+            "PYTHONPATH": "",
+        }
+        process = subprocess.run(
+            [server["command"], *server["args"]],
+            input="".join(json.dumps(message) + "\n" for message in messages),
+            capture_output=True,
+            text=True,
+            env=environment,
+            cwd=output / server["cwd"],
+            timeout=15,
+            check=False,
+        )
+
+        assert process.returncode == 0, process.stderr
+        responses = [json.loads(line) for line in process.stdout.splitlines()]
+        doctor = responses[1]["result"]["structuredContent"]
+        assert doctor["integrity_check"] == "ok"
+        store_ids.add(doctor["store"]["target_store_id"])
+
+    assert len(store_ids) == 1
+    databases = list(runtime.rglob("failure-memory.sqlite3"))
+    assert len(databases) == 1
 
 
 def test_packaged_launcher_exits_nonzero_with_sanitized_startup_failure(

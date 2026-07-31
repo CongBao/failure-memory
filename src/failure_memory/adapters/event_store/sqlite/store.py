@@ -6,7 +6,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from failure_memory.adapters.event_store.sqlite.errors import (
     SQLITE_BUSY_RETRY_DELAYS_SECONDS,
@@ -22,11 +22,16 @@ from failure_memory.domain.capture import (
 from failure_memory.domain.ids import new_id
 from failure_memory.domain.learning import (
     ClusterRunResult,
+    GeneralizationProposalDecision,
     GeneralizationRecommendation,
     GeneralizationReview,
+    GeneralizedLessonDraft,
     LessonCluster,
+    LessonGeneralizationProposal,
+    LessonGeneralizationProposalReview,
     LessonTransition,
     RankingExperimentResult,
+    ReviewedLessonCluster,
 )
 from failure_memory.domain.records import (
     IncidentDraft,
@@ -538,18 +543,40 @@ class SQLiteEventStore(EventStorePort):
                    version.lifecycle_state, version.signature, version.title, version.rule,
                    version.prevention_action, version.verification_action, version.applicability,
                    version.counterexamples, version.workspace_fingerprint,
-                   incident.expected_invariant, incident.controllable_cause,
-                   incident.outcome_summary, incident.material_impact, incident.recurrence_risk
+                   COALESCE(
+                       incident.expected_invariant,
+                       proposal_review.generalized_expected_invariant
+                   ) AS expected_invariant,
+                   COALESCE(
+                       incident.controllable_cause,
+                       proposal_review.generalized_controllable_cause
+                   ) AS controllable_cause,
+                   COALESCE(
+                       incident.outcome_summary,
+                       'Reviewed generalization across supporting lessons.'
+                   ) AS outcome_summary,
+                   COALESCE(
+                       incident.material_impact,
+                       'The supporting failures had durable impact or recurrence risk.'
+                   ) AS material_impact,
+                   COALESCE(
+                       incident.recurrence_risk,
+                       'The generalized failure pattern can recur across its applicability.'
+                   ) AS recurrence_risk
             FROM lesson_head AS head
             JOIN lesson_version AS version ON version.id = head.lesson_version_id
-            JOIN incident_lesson_relation AS relation
+            LEFT JOIN incident_lesson_relation AS relation
               ON relation.rowid = (
                   SELECT MIN(candidate.rowid)
                   FROM incident_lesson_relation AS candidate
-                  WHERE candidate.lesson_version_id = version.id
+                  WHERE candidate.lesson_id = version.lesson_id
               )
-            JOIN incident ON incident.id = relation.incident_id
+            LEFT JOIN incident ON incident.id = relation.incident_id
+            LEFT JOIN lesson_generalization_proposal_review AS proposal_review
+              ON proposal_review.resulting_lesson_version_id = version.id
+             AND proposal_review.decision = 'accept'
             WHERE version.lifecycle_state NOT IN ('deprecated', 'superseded')
+              AND (incident.id IS NOT NULL OR proposal_review.id IS NOT NULL)
             ORDER BY version.created_at, version.id
             """
         ).fetchall()
@@ -627,8 +654,10 @@ class SQLiteEventStore(EventStorePort):
                             id, schema_version, created_at, recall_attempt_id,
                             lesson_version_id, candidate_rank, channels_json,
                             exact_match, lexical_rank, semantic_rank, vector_distance,
-                            fused_score, eligible, eligibility_reason
-                        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            fused_score, eligible, eligibility_reason,
+                            cluster_review_id, cluster_key,
+                            cluster_supporting_lesson_version_ids_json
+                        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             candidate_id,
@@ -644,6 +673,16 @@ class SQLiteEventStore(EventStorePort):
                             candidate.score,
                             int(selected_rank is not None),
                             "returned" if selected_rank is not None else "below_top_k",
+                            candidate.cluster_review_id,
+                            candidate.cluster_key,
+                            (
+                                None
+                                if not candidate.cluster_supporting_lesson_version_ids
+                                else json.dumps(
+                                    candidate.cluster_supporting_lesson_version_ids,
+                                    separators=(",", ":"),
+                                )
+                            ),
                         ),
                     )
                     if selected_rank is not None:
@@ -1226,6 +1265,366 @@ class SQLiteEventStore(EventStorePort):
 
         return self._retry_busy_write(append)
 
+    def list_lesson_generalization_proposals(
+        self,
+    ) -> tuple[LessonGeneralizationProposal, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT proposal.id, proposal.cluster_run_id, proposal.cluster_key,
+                   proposal.supporting_lesson_version_ids_json,
+                   proposal.counterexample_lesson_version_ids_json,
+                   review.id AS latest_review_id,
+                   review.decision AS latest_decision
+            FROM lesson_generalization_proposal AS proposal
+            LEFT JOIN lesson_generalization_proposal_review AS review
+              ON review.proposal_id = proposal.id
+             AND NOT EXISTS (
+                    SELECT 1
+                    FROM lesson_generalization_proposal_review AS later
+                    WHERE later.prior_review_id = review.id
+                )
+            ORDER BY proposal.created_at, proposal.id
+            """
+        ).fetchall()
+        proposals: list[LessonGeneralizationProposal] = []
+        for row in rows:
+            supporting = _string_tuple_json(
+                str(row["supporting_lesson_version_ids_json"]),
+                "invalid proposal supporting lessons",
+            )
+            counterexamples = _string_tuple_json(
+                str(row["counterexample_lesson_version_ids_json"]),
+                "invalid proposal counterexamples",
+            )
+            decision = row["latest_decision"]
+            proposals.append(
+                LessonGeneralizationProposal(
+                    id=str(row["id"]),
+                    cluster_run_id=str(row["cluster_run_id"]),
+                    cluster_key=str(row["cluster_key"]),
+                    supporting_lesson_version_ids=supporting,
+                    counterexample_lesson_version_ids=counterexamples,
+                    status=(
+                        "proposed"
+                        if decision is None
+                        else f"{decision!s}ed"
+                        if str(decision) in {"accept", "reject"}
+                        else "deferred"
+                    ),
+                    latest_review_id=(
+                        None if row["latest_review_id"] is None else str(row["latest_review_id"])
+                    ),
+                )
+            )
+        return tuple(proposals)
+
+    def review_lesson_generalization_proposal(
+        self,
+        proposal_id: str,
+        decision: GeneralizationProposalDecision,
+        rationale_code: str,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+        generalized_lesson: GeneralizedLessonDraft | None = None,
+    ) -> LessonGeneralizationProposalReview:
+        sanitized_rationale = rationale_code.strip()
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", sanitized_rationale) is None:
+            raise ValueError("rationale code must be a bounded machine code")
+        if generalized_lesson is not None and decision is not GeneralizationProposalDecision.ACCEPT:
+            raise ValueError("only an accepted proposal can create a generalized lesson")
+        if generalized_lesson is not None and (
+            not generalized_lesson.expected_invariant.strip()
+            or not generalized_lesson.controllable_cause.strip()
+            or any(
+                not getattr(generalized_lesson.lesson, field).strip()
+                for field in (
+                    "title",
+                    "rule",
+                    "prevention_action",
+                    "verification_action",
+                    "applicability",
+                    "counterexamples",
+                )
+            )
+        ):
+            raise ValueError("generalized lesson fields must be non-empty")
+
+        def review() -> LessonGeneralizationProposalReview:
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                proposal_row = self.connection.execute(
+                    """
+                    SELECT supporting_lesson_version_ids_json,
+                           counterexample_lesson_version_ids_json
+                    FROM lesson_generalization_proposal
+                    WHERE id = ?
+                    """,
+                    (proposal_id,),
+                ).fetchone()
+                if proposal_row is None:
+                    raise ValueError("generalization proposal not found")
+                latest = self.connection.execute(
+                    """
+                    SELECT current.id, current.decision
+                    FROM lesson_generalization_proposal_review AS current
+                    WHERE current.proposal_id = ?
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM lesson_generalization_proposal_review AS later
+                            WHERE later.prior_review_id = current.id
+                        )
+                    """,
+                    (proposal_id,),
+                ).fetchone()
+                if latest is not None and str(latest["decision"]) in {"accept", "reject"}:
+                    raise ValueError("generalization proposal already has a terminal review")
+                supporting = _string_tuple_json(
+                    str(proposal_row["supporting_lesson_version_ids_json"]),
+                    "invalid proposal supporting lessons",
+                )
+                counterexamples = _string_tuple_json(
+                    str(proposal_row["counterexample_lesson_version_ids_json"]),
+                    "invalid proposal counterexamples",
+                )
+                review_id = new_id("lgd")
+                prior_review_id = None if latest is None else str(latest["id"])
+                resulting_lesson_version_id: str | None = None
+                if generalized_lesson is not None:
+                    signature = lesson_signature(
+                        generalized_lesson.expected_invariant,
+                        generalized_lesson.controllable_cause,
+                        generalized_lesson.lesson.prevention_action,
+                    )
+                    if self.find_lesson_by_signature(signature) is not None:
+                        raise ValueError(
+                            "generalized lesson duplicates an existing exact signature"
+                        )
+                    lesson_id = new_id("les")
+                    resulting_lesson_version_id = new_id("lv")
+                    self._insert_lesson(
+                        lesson_id,
+                        context,
+                        created_at,
+                        redaction_state,
+                    )
+                    self._insert_lesson_version(
+                        resulting_lesson_version_id,
+                        lesson_id,
+                        signature,
+                        generalized_lesson.lesson,
+                        context,
+                        created_at,
+                        redaction_state,
+                    )
+                    self._set_lesson_head(
+                        lesson_id,
+                        resulting_lesson_version_id,
+                        created_at,
+                    )
+                    self._insert_signature_alias(
+                        signature,
+                        lesson_id,
+                        resulting_lesson_version_id,
+                        context,
+                        created_at,
+                        redaction_state,
+                    )
+                self.connection.execute(
+                    """
+                    INSERT INTO lesson_generalization_proposal_review(
+                        id, schema_version, created_at, source_harness,
+                        workspace_fingerprint, session_fingerprint, provenance,
+                        redaction_state, proposal_id, prior_review_id, decision,
+                        rationale_code, generalized_expected_invariant,
+                        generalized_controllable_cause, resulting_lesson_version_id
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        review_id,
+                        _timestamp(created_at),
+                        context.harness,
+                        context.workspace_fingerprint,
+                        context.session_fingerprint,
+                        _PROVENANCE,
+                        redaction_state,
+                        proposal_id,
+                        prior_review_id,
+                        decision.value,
+                        sanitized_rationale,
+                        (
+                            None
+                            if generalized_lesson is None
+                            else generalized_lesson.expected_invariant
+                        ),
+                        (
+                            None
+                            if generalized_lesson is None
+                            else generalized_lesson.controllable_cause
+                        ),
+                        resulting_lesson_version_id,
+                    ),
+                )
+                if decision is GeneralizationProposalDecision.ACCEPT:
+                    for relation, version_ids in (
+                        ("supporting", supporting),
+                        ("counterexample", counterexamples),
+                    ):
+                        for lesson_version_id in version_ids:
+                            if (
+                                self.connection.execute(
+                                    "SELECT 1 FROM lesson_version WHERE id = ?",
+                                    (lesson_version_id,),
+                                ).fetchone()
+                                is None
+                            ):
+                                raise ValueError("proposal references an unknown lesson version")
+                            self.connection.execute(
+                                """
+                                INSERT INTO lesson_generalization_source(
+                                    id, schema_version, created_at, review_id,
+                                    lesson_version_id, relation
+                                ) VALUES (?, 1, ?, ?, ?, ?)
+                                """,
+                                (
+                                    new_id("lgs"),
+                                    _timestamp(created_at),
+                                    review_id,
+                                    lesson_version_id,
+                                    relation,
+                                ),
+                            )
+                self.connection.execute("COMMIT")
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.execute("ROLLBACK")
+                raise
+            return LessonGeneralizationProposalReview(
+                id=review_id,
+                proposal_id=proposal_id,
+                prior_review_id=prior_review_id,
+                decision=decision,
+                rationale_code=sanitized_rationale,
+                supporting_lesson_version_ids=supporting,
+                counterexample_lesson_version_ids=counterexamples,
+                resulting_lesson_version_id=resulting_lesson_version_id,
+            )
+
+        return self._retry_busy_write(review)
+
+    def list_accepted_lesson_clusters(self) -> tuple[ReviewedLessonCluster, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT review.id AS review_id, proposal.cluster_key,
+                   review.resulting_lesson_version_id,
+                   source.lesson_version_id
+            FROM lesson_generalization_proposal_review AS review
+            JOIN lesson_generalization_proposal AS proposal
+              ON proposal.id = review.proposal_id
+            JOIN lesson_generalization_source AS source
+              ON source.review_id = review.id
+             AND source.relation = 'supporting'
+            WHERE review.decision = 'accept'
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM lesson_generalization_proposal_review AS later
+                    WHERE later.prior_review_id = review.id
+                )
+            ORDER BY review.created_at, review.id, source.lesson_version_id
+            """
+        ).fetchall()
+        grouped: dict[str, dict[str, object]] = {}
+        for row in rows:
+            review_id = str(row["review_id"])
+            group = grouped.setdefault(
+                review_id,
+                {
+                    "cluster_key": str(row["cluster_key"]),
+                    "resulting_lesson_version_id": (
+                        None
+                        if row["resulting_lesson_version_id"] is None
+                        else str(row["resulting_lesson_version_id"])
+                    ),
+                    "supporting": [],
+                },
+            )
+            supporting = group["supporting"]
+            assert isinstance(supporting, list)
+            supporting.append(str(row["lesson_version_id"]))
+        return tuple(
+            ReviewedLessonCluster(
+                review_id=review_id,
+                cluster_key=str(group["cluster_key"]),
+                supporting_lesson_version_ids=tuple(sorted(cast(list[str], group["supporting"]))),
+                resulting_lesson_version_id=cast(
+                    str | None,
+                    group["resulting_lesson_version_id"],
+                ),
+            )
+            for review_id, group in grouped.items()
+        )
+
+    def append_learning_evaluation_run(
+        self,
+        report: Mapping[str, object],
+        *,
+        created_at: datetime,
+    ) -> None:
+        metrics = report.get("metrics")
+        thresholds = report.get("thresholds")
+        string_fields = (
+            "run_id",
+            "corpus_name",
+            "corpus_version",
+            "corpus_fingerprint",
+            "baseline_policy",
+            "candidate_policy",
+        )
+        case_count = report.get("case_count")
+        negative_case_count = report.get("negative_case_count")
+        passed = report.get("passed")
+        if (
+            not isinstance(metrics, Mapping)
+            or not isinstance(thresholds, Mapping)
+            or any(
+                not isinstance(report.get(field), str) or not report[field]
+                for field in string_fields
+            )
+            or type(case_count) is not int
+            or type(negative_case_count) is not int
+            or type(passed) is not bool
+        ):
+            raise ValueError("learning evaluation report is invalid")
+
+        def append() -> None:
+            self.connection.execute(
+                """
+                INSERT INTO learning_evaluation_run(
+                    id, schema_version, created_at, state, corpus_name,
+                    corpus_version, corpus_fingerprint, baseline_policy,
+                    candidate_policy, case_count, negative_case_count,
+                    metrics_json, thresholds_json, passed, production_activated
+                ) VALUES (?, 1, ?, 'shadow', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    str(report["run_id"]),
+                    _timestamp(created_at),
+                    str(report["corpus_name"]),
+                    str(report["corpus_version"]),
+                    str(report["corpus_fingerprint"]),
+                    str(report["baseline_policy"]),
+                    str(report["candidate_policy"]),
+                    case_count,
+                    negative_case_count,
+                    json.dumps(metrics, sort_keys=True, separators=(",", ":")),
+                    json.dumps(thresholds, sort_keys=True, separators=(",", ":")),
+                    int(passed),
+                ),
+            )
+
+        self._retry_busy_write(append)
+
     def _lesson_feedback_weights(self) -> dict[str, float]:
         rows = self.connection.execute(
             """
@@ -1469,6 +1868,13 @@ def _scalar_count(
 
 def _ratio(numerator: int, denominator: int) -> float | None:
     return None if denominator == 0 else numerator / denominator
+
+
+def _string_tuple_json(value: str, error_message: str) -> tuple[str, ...]:
+    decoded = json.loads(value)
+    if not isinstance(decoded, list) or not all(isinstance(item, str) for item in decoded):
+        raise ValueError(error_message)
+    return tuple(decoded)
 
 
 def _lesson_version_from_row(row: sqlite3.Row) -> LessonVersionRecord:

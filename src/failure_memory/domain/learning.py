@@ -3,13 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from failure_memory.domain.records import LessonState, LessonVersionRecord
+from failure_memory.domain.records import LessonDraft, LessonState, LessonVersionRecord
 
 
 class GeneralizationRecommendation(StrEnum):
     REUSE_EXACT = "reuse_exact"
     REVIEW_RELATED = "review_related"
     CREATE_DISTINCT = "create_distinct"
+
+
+class GeneralizationProposalDecision(StrEnum):
+    ACCEPT = "accept"
+    REJECT = "reject"
+    DEFER = "defer"
+
+
+@dataclass(frozen=True, slots=True)
+class GeneralizedLessonDraft:
+    expected_invariant: str
+    controllable_cause: str
+    lesson: LessonDraft
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,3 +76,34 @@ class ClusterRunResult:
     distance_threshold: float
     lesson_count: int
     clusters: tuple[LessonCluster, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LessonGeneralizationProposal:
+    id: str
+    cluster_run_id: str
+    cluster_key: str
+    supporting_lesson_version_ids: tuple[str, ...]
+    counterexample_lesson_version_ids: tuple[str, ...]
+    status: str
+    latest_review_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LessonGeneralizationProposalReview:
+    id: str
+    proposal_id: str
+    prior_review_id: str | None
+    decision: GeneralizationProposalDecision
+    rationale_code: str
+    supporting_lesson_version_ids: tuple[str, ...]
+    counterexample_lesson_version_ids: tuple[str, ...]
+    resulting_lesson_version_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedLessonCluster:
+    review_id: str
+    cluster_key: str
+    supporting_lesson_version_ids: tuple[str, ...]
+    resulting_lesson_version_id: str | None = None

@@ -12,6 +12,10 @@ from failure_memory.application.errors import (
 )
 from failure_memory.application.service import FailureMemoryService
 from failure_memory.domain.capture import Classification, ExpectationSource, FailureCandidate
+from failure_memory.domain.learning import (
+    GeneralizationProposalDecision,
+    GeneralizedLessonDraft,
+)
 from failure_memory.domain.records import (
     IncidentDraft,
     LessonDraft,
@@ -75,6 +79,12 @@ _OUTCOME_KEYS = {
 }
 _TRANSITION_KEYS = {"lesson_id", "to_state", "rationale_code"}
 _CLUSTER_KEYS = {"distance_threshold"}
+_PROPOSAL_REVIEW_KEYS = {
+    "proposal_id",
+    "decision",
+    "rationale_code",
+    "generalized_lesson",
+}
 _LOGGER = logging.getLogger(__name__)
 _REJECTED_MESSAGE = "The failure-memory service rejected the operation."
 _INTERNAL_ERROR_MESSAGE = "Internal failure-memory error."
@@ -108,6 +118,8 @@ def dispatch_tool(
         "transition_failure_lesson",
         "run_failure_ranking_experiment",
         "propose_failure_lesson_clusters",
+        "list_failure_generalization_proposals",
+        "review_failure_generalization_proposal",
         "failure_memory_setup_status",
         "failure_memory_doctor",
     }:
@@ -131,7 +143,17 @@ def dispatch_tool(
             return _transition_lesson(arguments, service)
         if name == "propose_failure_lesson_clusters":
             return _propose_clusters(arguments, service)
+        if name == "review_failure_generalization_proposal":
+            return _review_generalization_proposal(arguments, service)
         _validate_object(arguments, set(), set(), "arguments")
+        if name == "list_failure_generalization_proposals":
+            return _success(
+                {
+                    "scope": "global_personal",
+                    "proposals": list(service.list_lesson_generalization_proposals()),
+                },
+                "Failure generalization proposals returned.",
+            )
         if name == "get_failure_memory_metrics":
             return _success(
                 dict[str, object](service.metrics()), "Failure-memory metrics returned."
@@ -434,6 +456,89 @@ def _propose_clusters(
     )
 
 
+def _review_generalization_proposal(
+    arguments: Mapping[str, object],
+    service: FailureMemoryService,
+) -> dict[str, object]:
+    _validate_object(
+        arguments,
+        {"proposal_id", "decision", "rationale_code"},
+        _PROPOSAL_REVIEW_KEYS,
+        "arguments",
+    )
+    decision_value = _require_string(arguments, "decision")
+    try:
+        decision = GeneralizationProposalDecision(decision_value)
+    except ValueError as exc:
+        raise BoundaryValidationError(f"decision has invalid value: {decision_value}") from exc
+    generalized_lesson: GeneralizedLessonDraft | None = None
+    if "generalized_lesson" in arguments:
+        if decision is not GeneralizationProposalDecision.ACCEPT:
+            raise BoundaryValidationError(
+                "generalized_lesson is allowed only for an accepted proposal"
+            )
+        generalized_arguments = _require_object(arguments, "generalized_lesson")
+        generalized_keys = {
+            "expected_invariant",
+            "controllable_cause",
+            "lesson",
+        }
+        _validate_object(
+            generalized_arguments,
+            generalized_keys,
+            generalized_keys,
+            "generalized_lesson",
+        )
+        lesson_arguments = _require_object(generalized_arguments, "lesson")
+        _validate_object(
+            lesson_arguments,
+            _LESSON_KEYS,
+            _LESSON_KEYS,
+            "generalized_lesson.lesson",
+        )
+        generalized_lesson = GeneralizedLessonDraft(
+            expected_invariant=_require_string(
+                generalized_arguments,
+                "expected_invariant",
+            ),
+            controllable_cause=_require_string(
+                generalized_arguments,
+                "controllable_cause",
+            ),
+            lesson=LessonDraft(
+                title=_require_string(lesson_arguments, "title"),
+                rule=_require_string(lesson_arguments, "rule"),
+                prevention_action=_require_string(
+                    lesson_arguments,
+                    "prevention_action",
+                ),
+                verification_action=_require_string(
+                    lesson_arguments,
+                    "verification_action",
+                ),
+                applicability=_require_string(
+                    lesson_arguments,
+                    "applicability",
+                ),
+                counterexamples=_require_string(
+                    lesson_arguments,
+                    "counterexamples",
+                ),
+            ),
+        )
+    return _success(
+        dict(
+            service.review_lesson_generalization_proposal(
+                _require_string(arguments, "proposal_id"),
+                decision,
+                _require_string(arguments, "rationale_code"),
+                generalized_lesson,
+            )
+        ),
+        "Failure generalization proposal review recorded.",
+    )
+
+
 def _lesson_payload(lesson: LessonVersionRecord) -> dict[str, object]:
     return {
         "id": lesson.id,
@@ -467,6 +572,11 @@ def _recall_candidate_payload(candidate: RecallCandidate) -> dict[str, object]:
         "lexical_rank": candidate.lexical_rank,
         "semantic_rank": candidate.semantic_rank,
         "vector_distance": candidate.vector_distance,
+        "cluster_review_id": candidate.cluster_review_id,
+        "cluster_key": candidate.cluster_key,
+        "cluster_supporting_lesson_version_ids": list(
+            candidate.cluster_supporting_lesson_version_ids
+        ),
     }
 
 

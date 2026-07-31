@@ -12,11 +12,16 @@ from failure_memory.domain.capture import (
 )
 from failure_memory.domain.learning import (
     ClusterRunResult,
+    GeneralizationProposalDecision,
     GeneralizationRecommendation,
     GeneralizationReview,
+    GeneralizedLessonDraft,
     LessonCluster,
+    LessonGeneralizationProposal,
+    LessonGeneralizationProposalReview,
     LessonTransition,
     RankingExperimentResult,
+    ReviewedLessonCluster,
 )
 from failure_memory.domain.records import (
     IncidentDraft,
@@ -126,6 +131,31 @@ class EventStorePort(Protocol):
         *,
         created_at: datetime,
     ) -> ClusterRunResult: ...
+
+    def list_lesson_generalization_proposals(
+        self,
+    ) -> Sequence[LessonGeneralizationProposal]: ...
+
+    def review_lesson_generalization_proposal(
+        self,
+        proposal_id: str,
+        decision: GeneralizationProposalDecision,
+        rationale_code: str,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+        generalized_lesson: GeneralizedLessonDraft | None = None,
+    ) -> LessonGeneralizationProposalReview: ...
+
+    def list_accepted_lesson_clusters(self) -> Sequence[ReviewedLessonCluster]: ...
+
+    def append_learning_evaluation_run(
+        self,
+        report: Mapping[str, object],
+        *,
+        created_at: datetime,
+    ) -> None: ...
 
     def integrity_check(self) -> str: ...
 

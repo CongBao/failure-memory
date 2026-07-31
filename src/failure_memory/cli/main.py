@@ -114,6 +114,30 @@ def _parser() -> argparse.ArgumentParser:
     )
     learning_subparsers = learning_parser.add_subparsers(dest="learning_command", required=True)
     learning_subparsers.add_parser("experiment", help="append a shadow feedback-ranking experiment")
+    learning_subparsers.add_parser(
+        "proposals",
+        help="list reviewable lesson generalization proposals",
+    )
+    proposal_review_parser = learning_subparsers.add_parser(
+        "review",
+        help="append an explicit generalization proposal review",
+    )
+    proposal_review_parser.add_argument(
+        "--input",
+        required=True,
+        metavar="FILE|-",
+        help="read one JSON object from FILE or standard input",
+    )
+    evaluation_parser = learning_subparsers.add_parser(
+        "evaluate",
+        help="run a local offline shadow evaluation corpus",
+    )
+    evaluation_parser.add_argument(
+        "--corpus",
+        required=True,
+        type=Path,
+        help="read one public synthetic evaluation corpus",
+    )
     cluster_parser = learning_subparsers.add_parser(
         "cluster", help="append proposal-only semantic lesson clusters"
     )
@@ -198,6 +222,27 @@ def _run(
                 payload = service.propose_lesson_clusters(
                     distance_threshold=float(arguments.distance_threshold)
                 )
+            elif arguments.learning_command == "proposals":
+                payload = {
+                    "scope": "global_personal",
+                    "proposals": list(service.list_lesson_generalization_proposals()),
+                }
+            elif arguments.learning_command == "review":
+                envelope = dispatch_tool(
+                    "review_failure_generalization_proposal",
+                    _read_input(cast(str, arguments.input), stdin),
+                    service,
+                    log_exceptions=False,
+                )
+                payload = cast(Mapping[str, object], envelope["structuredContent"])
+                _emit(payload, stdout)
+                if envelope["isError"] is True:
+                    error = cast(Mapping[str, object], payload["error"])
+                    _diagnose(cast(str, error["message"]), stderr)
+                    return 2
+                return 0
+            elif arguments.learning_command == "evaluate":
+                payload = service.run_offline_learning_evaluation(cast(Path, arguments.corpus))
             else:
                 payload = service.run_shadow_ranking_experiment()
         except ValueError as exc:

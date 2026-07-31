@@ -196,6 +196,9 @@ class RecallCandidate:
     lexical_rank: int | None = None
     semantic_rank: int | None = None
     vector_distance: float | None = None
+    cluster_review_id: str | None = None
+    cluster_key: str | None = None
+    cluster_supporting_lesson_version_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

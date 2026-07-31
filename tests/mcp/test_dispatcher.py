@@ -215,6 +215,33 @@ def test_requirement_update_returns_reject_decision_in_structured_content(
     assert result["structuredContent"]["reason_codes"] == ["not_preexisting_requirement"]
 
 
+def test_generalization_proposal_tools_are_schema_valid_at_the_mcp_boundary(
+    service: FailureMemoryService,
+) -> None:
+    listed = dispatch_tool("list_failure_generalization_proposals", {}, service)
+
+    _assert_envelope(listed)
+    _assert_valid_tool_result("list_failure_generalization_proposals", listed)
+    assert listed["structuredContent"] == {
+        "scope": "global_personal",
+        "proposals": [],
+    }
+
+    invalid_review = dispatch_tool(
+        "review_failure_generalization_proposal",
+        {
+            "proposal_id": "lgp_missing",
+            "decision": "accept",
+            "rationale_code": "reviewed_related_failures",
+            "unexpected": True,
+        },
+        service,
+    )
+    assert invalid_review["isError"] is True
+    assert invalid_review["structuredContent"]["error"]["code"] == "invalid_arguments"
+    _assert_valid_tool_result("review_failure_generalization_proposal", invalid_review)
+
+
 def test_real_sqlite_contention_returns_stable_mcp_busy_result(
     service: FailureMemoryService,
 ) -> None:
