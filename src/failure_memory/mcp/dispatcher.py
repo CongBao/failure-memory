@@ -25,6 +25,14 @@ from failure_memory.domain.causal import (
     RepairOutcomeKind,
     RepairRecommendationDraft,
 )
+from failure_memory.domain.fast_capture import (
+    CauseEvidence,
+    ExpectationEvidence,
+    LessonEvidence,
+    ObservedEvidence,
+    RememberFailureDraft,
+)
+from failure_memory.domain.ids import new_id
 from failure_memory.domain.learning import (
     GeneralizationProposalDecision,
     GeneralizedLessonDraft,
@@ -109,6 +117,19 @@ _INTERNAL_ERROR_MESSAGE = "Internal failure-memory error."
 class BoundaryValidationError(ValueError):
     """A safe-to-expose violation of the public tool argument contract."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        field: str | None = None,
+        code: str = "invalid_arguments",
+        expected: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.field = field
+        self.code = code
+        self.expected = expected
+
 
 def dispatch_tool(
     name: str,
@@ -116,9 +137,11 @@ def dispatch_tool(
     service: FailureMemoryService,
     *,
     log_exceptions: bool = True,
+    transport: str = "mcp",
 ) -> dict[str, object]:
     """Validate one public operation, invoke the service, and serialize a MCP tool result."""
     if name not in {
+        "remember_failure",
         "evaluate_failure_candidate",
         "diagnose_failure_cause",
         "record_failure_incident",
@@ -145,6 +168,8 @@ def dispatch_tool(
     try:
         if not isinstance(arguments, Mapping):
             raise BoundaryValidationError("arguments must be an object")
+        if name == "remember_failure":
+            return _remember(arguments, service, transport=transport)
         if name == "evaluate_failure_candidate":
             return _evaluate(arguments, service)
         if name == "diagnose_failure_cause":
@@ -214,7 +239,12 @@ def dispatch_tool(
             return _success(dict(service.setup_status()), "Failure-memory setup status returned.")
         return _success(dict(service.doctor()), "Failure-memory doctor report returned.")
     except BoundaryValidationError as exc:
-        return _error(str(exc), "invalid_arguments")
+        return _error(
+            str(exc),
+            exc.code,
+            field=exc.field,
+            expected=exc.expected,
+        )
     except StorageBusyError:
         return _error(STORAGE_BUSY_MESSAGE, "busy")
     except SemanticSetupRequiredError:
@@ -222,9 +252,187 @@ def dispatch_tool(
     except ValueError:
         return _error(_REJECTED_MESSAGE, "operation_rejected")
     except Exception:
+        trace_id = new_id("err")
         if log_exceptions:
-            _LOGGER.exception("Unexpected failure-memory MCP tool failure for %s", name)
-        return _error(_INTERNAL_ERROR_MESSAGE, "internal_error")
+            _LOGGER.exception(
+                "Unexpected failure-memory MCP tool failure for %s (trace %s)",
+                name,
+                trace_id,
+            )
+        return _error(_INTERNAL_ERROR_MESSAGE, "internal_error", trace_id=trace_id)
+
+
+def _remember(
+    arguments: Mapping[str, object],
+    service: FailureMemoryService,
+    *,
+    transport: str,
+) -> dict[str, object]:
+    allowed = {
+        "summary",
+        "classification",
+        "failure_portion",
+        "expectation",
+        "observed",
+        "cause",
+        "lesson",
+    }
+    _validate_object(arguments, {"summary", "classification"}, allowed, "arguments")
+    classification = _parse_classification(_require_string(arguments, "classification"))
+    expectation: ExpectationEvidence | None = None
+    observed: ObservedEvidence | None = None
+    cause: CauseEvidence | None = None
+    lesson: LessonEvidence | None = None
+    if classification in {Classification.REAL_FAILURE, Classification.MIXED}:
+        missing = next(
+            (
+                field
+                for field in ("expectation", "observed", "cause", "lesson")
+                if field not in arguments
+            ),
+            None,
+        )
+        if missing is not None:
+            raise BoundaryValidationError(
+                f"{missing} is required for {classification.value}",
+                field=missing,
+                code="missing_failure_evidence",
+                expected=f"{missing} object",
+            )
+        if classification is Classification.MIXED and "failure_portion" not in arguments:
+            raise BoundaryValidationError(
+                "failure_portion is required for mixed feedback",
+                field="failure_portion",
+                code="mixed_failure_not_separated",
+                expected="only the prior-invariant mismatch",
+            )
+        expectation_arguments = _require_object(arguments, "expectation")
+        expectation_keys = {"invariant", "source", "evidence"}
+        _validate_object(
+            expectation_arguments,
+            expectation_keys,
+            expectation_keys,
+            "expectation",
+        )
+        expectation = ExpectationEvidence(
+            invariant=_require_string(expectation_arguments, "invariant"),
+            source=_parse_expectation_source(
+                _require_string(expectation_arguments, "source")
+            ),
+            evidence=_require_string(expectation_arguments, "evidence"),
+        )
+        observed_arguments = _require_object(arguments, "observed")
+        _validate_object(
+            observed_arguments,
+            {"outcome", "impact"},
+            {"outcome", "impact", "recurrence_risk"},
+            "observed",
+        )
+        observed = ObservedEvidence(
+            outcome=_require_string(observed_arguments, "outcome"),
+            impact=_require_string(observed_arguments, "impact"),
+            recurrence_risk=_optional_string(observed_arguments, "recurrence_risk"),
+        )
+        cause_arguments = _require_object(arguments, "cause")
+        _validate_object(
+            cause_arguments,
+            {
+                "layer",
+                "failure_mode",
+                "component",
+                "evidence",
+                "recommended_change",
+                "verification",
+            },
+            {
+                "layer",
+                "failure_mode",
+                "component",
+                "evidence",
+                "recommended_change",
+                "verification",
+                "confidence",
+            },
+            "cause",
+        )
+        confidence_value = _optional_string(cause_arguments, "confidence")
+        cause = CauseEvidence(
+            layer=_parse_enum(
+                CauseLayer,
+                _require_string(cause_arguments, "layer"),
+                "cause.layer",
+            ),
+            failure_mode=_parse_enum(
+                FailureMode,
+                _require_string(cause_arguments, "failure_mode"),
+                "cause.failure_mode",
+            ),
+            component=_require_string(cause_arguments, "component"),
+            evidence=_require_string(cause_arguments, "evidence"),
+            recommended_change=_require_string(cause_arguments, "recommended_change"),
+            verification=_require_string(cause_arguments, "verification"),
+            confidence=(
+                CausalConfidence.MEDIUM
+                if confidence_value is None
+                else _parse_enum(
+                    CausalConfidence,
+                    confidence_value,
+                    "cause.confidence",
+                )
+            ),
+        )
+        lesson_arguments = _require_object(arguments, "lesson")
+        _validate_object(
+            lesson_arguments,
+            {"rule", "prevention", "verification"},
+            {
+                "rule",
+                "prevention",
+                "verification",
+                "title",
+                "applicability",
+                "counterexamples",
+            },
+            "lesson",
+        )
+        lesson = LessonEvidence(
+            rule=_require_string(lesson_arguments, "rule"),
+            prevention=_require_string(lesson_arguments, "prevention"),
+            verification=_require_string(lesson_arguments, "verification"),
+            title=_optional_string(lesson_arguments, "title"),
+            applicability=_optional_string(lesson_arguments, "applicability"),
+            counterexamples=_optional_string(lesson_arguments, "counterexamples"),
+        )
+    result = service.remember_failure(
+        RememberFailureDraft(
+            summary=_require_string(arguments, "summary"),
+            classification=classification,
+            expectation=expectation,
+            observed=observed,
+            cause=cause,
+            lesson=lesson,
+            failure_portion=_optional_string(arguments, "failure_portion"),
+        ),
+        transport=transport,
+    )
+    payload: dict[str, object] = {
+        "operation_id": result.operation_id,
+        "status": result.status.value,
+        "capture_attempt_id": result.capture_attempt_id,
+        "decision": result.decision.value,
+        "reason_codes": [reason.value for reason in result.reason_codes],
+        "deduplication_status": result.deduplication_status.value,
+        "semantic_status": result.semantic_status,
+        "total_latency_ms": result.total_latency_ms,
+        "incident_id": result.incident_id,
+        "lesson_id": result.lesson_id,
+        "lesson_version_id": result.lesson_version_id,
+        "relation": None if result.relation is None else result.relation.value,
+        "causal_assessment_id": result.causal_assessment_id,
+        "repair_recommendation_id": result.repair_recommendation_id,
+        "generalization_review_id": result.generalization_review_id,
+    }
+    return _success(payload, f"Failure-memory result: {result.status.value}.")
 
 
 def _evaluate(arguments: Mapping[str, object], service: FailureMemoryService) -> dict[str, object]:
@@ -541,7 +749,7 @@ def _recall(
             cause_layer=_optional_cause_layer(arguments, "cause_layer"),
             failure_mode=_optional_failure_mode(arguments, "failure_mode"),
             repair_target_layer=_optional_cause_layer(arguments, "repair_target_layer"),
-            top_k=_optional_int(arguments, "top_k", default=3, minimum=1, maximum=5),
+            top_k=_optional_int(arguments, "top_k", default=3, minimum=1, maximum=3),
         )
     )
     payload: dict[str, object] = {
@@ -955,8 +1163,22 @@ def _success(payload: dict[str, object], summary: str) -> dict[str, object]:
     }
 
 
-def _error(message: str, code: str) -> dict[str, object]:
-    payload: dict[str, object] = {"error": {"code": code, "message": message}}
+def _error(
+    message: str,
+    code: str,
+    *,
+    field: str | None = None,
+    expected: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, object]:
+    error: dict[str, object] = {"code": code, "message": message}
+    if field is not None:
+        error["field"] = field
+    if expected is not None:
+        error["expected"] = expected
+    if trace_id is not None:
+        error["trace_id"] = trace_id
+    payload: dict[str, object] = {"error": error}
     return {
         "content": [{"type": "text", "text": message}],
         "structuredContent": payload,

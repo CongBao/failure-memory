@@ -1,274 +1,43 @@
 {
-  "contract_version": 4,
+  "contract_version": 5,
   "policy_kind": "record_failure",
   "skill": {
     "name": "record-agent-failure",
-    "description": "Use when a user challenges an agent outcome, reports a missed prior invariant or repeated correction, or explicitly asks the agent to learn from a failure; not for new requirements, newly supplied details, first-time preferences, or ordinary refinement."
+    "description": "Use when a user challenges an agent outcome, reports a missed prior invariant or repeated correction, or explicitly asks the agent to learn from a failure; do not treat new requirements, new details, first-time preferences, or ordinary refinement as failures."
   },
   "policy": {
-    "core": {
-      "corrective_wording_is_failure_evidence": false,
-      "expectation_time_basis": "before_outcome",
-      "required_mismatch_qualities": [
-        "material",
-        "controllable",
-        "durable"
-      ]
-    },
-    "evidence": {
-      "establish_chronology": true,
-      "fields": [
-        "expectation_source",
-        "availability_time",
-        "observed_outcome",
-        "inspectable_mismatch",
-        "impact_or_recurrence_risk",
-        "controllability_with_then_available_information",
-        "durable_prevention_value"
-      ],
-      "prohibit_invention": true,
-      "draft_exclusions": [
-        "raw_prompts",
-        "secrets",
-        "unnecessary_user_text"
-      ]
-    },
-    "classification": {
-      "cardinality": 1,
-      "tier": "Tier One",
-      "classes": [
-        {
-          "id": "requirement_update",
-          "criterion": "The requested feature or contract changed after the outcome."
-        },
-        {
-          "id": "requirement_clarification",
-          "criterion": "A previously unavailable detail now clarifies the work."
-        },
-        {
-          "id": "preference_update",
-          "criterion": "A preference is stated for the first time."
-        },
-        {
-          "id": "real_failure",
-          "criterion": "A prior expectation, mismatch, impact/risk, controllability, and durable lesson are all evidenced."
-        },
-        {
-          "id": "mixed",
-          "criterion": "Feedback contains both a genuine prior-invariant mismatch and new work."
-        },
-        {
-          "id": "uncertain",
-          "criterion": "Chronology or evidence cannot establish the criteria; do not guess."
-        }
-      ]
-    },
-    "tools": {
-      "evaluate": "evaluate_failure_candidate",
-      "diagnose": "diagnose_failure_cause",
-      "review": "review_failure_recording",
-      "record": "record_failure_incident",
-      "repair_outcome": "record_failure_repair_outcome"
-    },
-    "workflow": {
-      "entry": "classify",
-      "tool_order": [
-        "evaluate_failure_candidate",
-        "diagnose_failure_cause",
-        "review_failure_recording",
-        "record_failure_incident"
-      ],
-      "edges": [
-        {
-          "id": "classify_to_evaluate",
-          "from": "classify",
-          "to": "evaluate",
-          "condition": "always"
-        },
-        {
-          "id": "evaluate_accept_to_diagnose",
-          "from": "evaluate",
-          "to": "diagnose",
-          "condition": "decision == accept"
-        },
-        {
-          "id": "diagnose_to_review",
-          "from": "diagnose",
-          "to": "review",
-          "condition": "causal_assessment_recorded"
-        },
-        {
-          "id": "review_to_record",
-          "from": "review",
-          "to": "record",
-          "condition": "explicit disposition selected"
-        },
-        {
-          "id": "evaluate_reject_defer_to_terminal",
-          "from": "evaluate",
-          "to": "terminal_no_write",
-          "condition": "decision in [reject, defer]"
-        }
-      ]
-    },
-    "evaluation": {
-      "every_classification": true,
-      "pre_accept_record_allowed": false,
-      "none_is_evaluated_decision": false,
-      "applies_to": [
-        "uncertain",
-        "requirement_classes"
-      ]
-    },
-    "terminal_decisions": {
-      "reject": {
-        "report_and_stop": true,
-        "write": false,
-        "label_as_failure": false
-      },
-      "defer": {
-        "report_and_stop": true,
-        "write": false,
-        "label_as_failure": false
-      }
-    },
-    "requirement_summary": {
-      "required_slots": [
-        "literal_class",
-        "evaluation_only",
-        "chronology_reason"
-      ],
-      "required_ending": "The work may still be implemented through the ordinary requirement workflow.",
-      "brevity_may_omit": false
-    },
-    "mixed": {
-      "split_before_evaluation": true,
-      "record_portion": "prior_invariant_only",
-      "new_work_role": "context_only",
-      "new_work_route": "ordinary_requirement_workflow",
-      "include_new_work_in_lesson": false,
-      "shared_topic_converts_new_work": false,
-      "urgency_converts_new_work": false,
-      "authority_converts_new_work": false,
-      "intended_call_format": "evaluate_then_diagnose_then_review_then_record_only_if_accept_otherwise_no_write",
-      "unconditioned_record_listing_allowed": false
-    },
-    "accepted_capture": {
-      "draft_only_after": "accept",
-      "incident_mutability": "immutable",
-      "lesson_count": 1,
-      "lesson_authority": "proposed",
-      "source_portion": "accepted_failure_portion",
-      "record_capture_id_state": "accepted",
-      "record_drafts_sanitized": true
-    },
-    "causal_diagnosis": {
-      "required_before_review": true,
-      "evidence_bounded": true,
-      "primary_factor_count": 1,
-      "maximum_factors": 4,
-      "maximum_recommendations": 3,
-      "unknown_allowed": true,
-      "prefer_most_specific_inspectable_layer": true,
-      "component_reference_format": "portable_namespaced",
-      "layers": [
-        "skill_instruction",
-        "agent_instruction",
-        "project_instruction",
-        "system_instruction",
-        "hook_policy",
-        "plugin_manifest",
-        "tool_contract",
-        "application_logic",
-        "adapter_runtime",
-        "schema_migration",
-        "test_evaluation_gap",
-        "harness_limitation",
-        "model_behavior",
-        "external_dependency",
-        "unknown"
-      ],
-      "failure_modes": [
-        "missing",
-        "ambiguous",
-        "conflicting",
-        "not_loaded",
-        "not_triggered",
-        "ignored",
-        "incorrectly_implemented",
-        "insufficient_validation",
-        "uninspectable",
-        "unknown"
-      ],
-      "recommendation_role": "proposed_repair",
-      "automatic_edit": false
-    },
-    "generalization_review": {
-      "required_before_record": true,
-      "candidate_limit": 3,
-      "automatic_merge": false,
-      "allowed_dispositions": [
-        "reuse_existing",
-        "generalize_existing",
-        "create_distinct"
-      ],
-      "exact_reuse_required": true,
-      "rationale_code_required": true,
-      "defer_if_fit_is_uncertain": true
-    },
-    "result_reporting": {
-      "distinguish": [
-        "created_new_proposed_lesson",
-        "reused_existing_lesson",
-        "generalized_existing_lesson"
-      ],
-      "cite_returned_identifiers": true,
-      "allow_verified_description": false
-    },
-    "repair_feedback": {
-      "only_after_observable_outcome": true,
-      "do_not_invent": true,
-      "allowed_outcomes": [
-        "applied",
-        "rejected",
-        "partially_applied",
-        "verified_effective",
-        "verified_ineffective",
-        "recurrence_observed",
-        "superseded"
-      ]
-    },
-    "example": {
-      "prior_invariant": "no_raw_prompts",
-      "observed_violation": "stored_raw_prompts",
-      "new_work": "encryption_at_rest",
-      "classification": "mixed",
-      "record_only": "raw_prompt_violation",
-      "new_work_route": "ordinary_requirement_workflow"
-    },
-    "rationalization_checks": [
-      {
-        "temptation": "The user called it a failure.",
-        "response": "Reconstruct chronology; wording is not evidence."
-      },
-      {
-        "temptation": "The new control would have prevented it.",
-        "response": "Hindsight does not make the control a prior requirement."
-      },
-      {
-        "temptation": "Bundle both issues to save time.",
-        "response": "Split `mixed`; never broaden the immutable incident."
-      },
-      {
-        "temptation": "Record now and qualify later.",
-        "response": "Evaluation must precede recording."
-      }
+    "tool": "remember_failure",
+    "fallback_launcher": "scripts/failure_memory_cli.py",
+    "fallback_arguments": [
+      "remember",
+      "--stdin"
     ],
-    "stop_conditions": [
-      "inventing_chronology",
-      "using_ad_hoc_class",
-      "recording_rejected_or_deferred_capture",
-      "upgrading_proposed_lesson_to_verified"
-    ]
+    "classifications": {
+      "requirement_update": "The requested feature or contract changed after the outcome.",
+      "requirement_clarification": "A previously unavailable detail now clarifies the work.",
+      "preference_update": "A preference is stated for the first time.",
+      "real_failure": "A prior expectation, controllable mismatch, impact or recurrence risk, and durable prevention lesson are evidenced.",
+      "mixed": "Feedback contains both a genuine prior-invariant mismatch and new work.",
+      "uncertain": "The available evidence cannot establish the chronology or failure criteria."
+    },
+    "required_failure_evidence": [
+      "expectation",
+      "observed",
+      "cause",
+      "lesson"
+    ],
+    "sensitive_exclusions": [
+      "raw prompts",
+      "secrets",
+      "unnecessary user text"
+    ],
+    "single_call": true,
+    "record_qualification_attempts": true,
+    "fallback_call_limit": 1,
+    "inspect_implementation": false,
+    "inspect_database": false,
+    "temporary_files": false,
+    "unknown_cause_allowed": true,
+    "lesson_authority": "proposed"
   }
 }

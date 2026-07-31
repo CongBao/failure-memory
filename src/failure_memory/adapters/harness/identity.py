@@ -3,7 +3,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-SUPPORTED_HARNESSES = ("codex", "claude-code", "copilot", "cursor", "local")
+SUPPORTED_HARNESSES = (
+    "codex",
+    "claude-code",
+    "copilot-cli",
+    "copilot-vscode",
+    "cursor",
+    "generic",
+    "local",
+)
 
 
 def detect_harness(env: Mapping[str, str]) -> str:
@@ -14,7 +22,7 @@ def detect_harness(env: Mapping[str, str]) -> str:
             raise ValueError(f"unsupported failure-memory harness: {explicit}")
         return explicit
     if env.get("COPILOT_PLUGIN_DATA") or env.get("COPILOT_PLUGIN_ROOT"):
-        return "copilot"
+        return "copilot-cli"
     if env.get("CURSOR_PLUGIN_DATA") or env.get("CURSOR_PLUGIN_ROOT"):
         return "cursor"
     # Codex exports both PLUGIN_* and CLAUDE_PLUGIN_* compatibility variables.

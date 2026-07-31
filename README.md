@@ -4,66 +4,58 @@
 [![Python 3.13+](https://img.shields.io/badge/Python-3.13%2B-3776AB.svg)](https://www.python.org/)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Failure Memory gives AI coding agents a shared, local memory of mistakes worth
+Failure Memory gives AI coding agents one shared, local memory of mistakes worth
 remembering.
 
-It exists because **not every correction is a failure**. A user may be adding a new
-requirement, clarifying missing information, or changing a preference. Saving all of
-those as “lessons” creates noisy memory and makes the agent less reliable.
+It exists because not every correction is a failure. A user may be adding a requirement,
+supplying a previously unavailable detail, or stating a preference for the first time.
+Saving every correction as a lesson creates noisy memory and makes future agents less
+reliable.
 
-Failure Memory records only durable lessons from real failures, diagnoses where the
-failure came from, recalls lessons before similar work, and learns whether recalls and
-recommended repairs were useful.
+Failure Memory separates those cases from genuine failures, records an evidence-based
+root cause and proposed prevention lesson, finds related lessons, and recalls them across
+agent applications.
 
-## Why use it?
+## Why it is fast
 
-Without a deliberate failure-memory system, agents tend to:
+The normal agent surface contains only two tools:
 
-- repeat mistakes across sessions and tools;
-- treat requirement changes as failures;
-- save several copies of the same lesson;
-- recall loosely related advice without measuring whether it helped.
+- `remember_failure` qualifies, diagnoses, deduplicates, records, and emits telemetry in
+  one call.
+- `recall_failure_lessons` performs one bounded exact, lexical, semantic, or hybrid
+  lookup.
 
-Failure Memory adds three gates:
+The agent does not coordinate a multi-step database workflow. If its harness does not
+expose MCP tools, each bundled skill points directly to a one-command CLI fallback. The
+agent must not search plugin files, inspect SQLite, discover runtimes, call private APIs,
+or create temporary payload files.
 
-1. **Failure qualification** — was there an established expectation, an observable
-   mismatch, meaningful impact or recurrence risk, a controllable cause, and a durable
-   prevention lesson?
-2. **Causal diagnosis** — did the failure come from a missing, ambiguous, conflicting,
-   unloaded, ignored, or incorrectly implemented skill, agent instruction, project rule,
-   hook, tool contract, application, adapter, schema, test, harness, model, or external
-   dependency? If evidence cannot establish a cause, it remains explicitly unknown.
-3. **Generalization review** — should the incident reuse an existing lesson, support a
-   broader version of one, or remain distinct?
-
-Similarity search suggests at most three related lessons. It never merges or promotes a
-lesson automatically.
+Exact and FTS5 matching remain available when the optional vector adapter is not ready.
+Recording never waits for dependency installation or model download.
 
 ## Supported agents
 
-| Agent or harness | Support | Installation |
-| --- | --- | --- |
-| OpenAI Codex | Plugin, skills, prompt/session hooks, and MCP tools | Public GitHub marketplace |
-| Claude Code | Plugin, skills, prompt/session hooks, and MCP tools | Public GitHub marketplace |
-| GitHub Copilot CLI | Plugin, skills, session hook, and MCP tools | Public GitHub marketplace |
-| Cursor | Plugin, skills, session hook, and MCP tools | Local plugin or team marketplace |
-| Other MCP clients | Core MCP tools | Configure the bundled stdio server manually |
+All projections use the same memory store for the current OS user.
 
-All supported harnesses use the same memory for the current OS user. Installing the
-plugin in a second agent does not create a second database.
+| Agent or harness | Integration |
+| --- | --- |
+| OpenAI Codex | Plugin, skills, hooks, MCP |
+| Claude Code | Plugin, skills, hooks, MCP |
+| GitHub Copilot CLI | Plugin, skills, session hook, MCP |
+| GitHub Copilot Chat in VS Code | User skills and VS Code MCP configuration |
+| Cursor | Plugin, skills, session hook, MCP |
+| Other agents | Generic skill projection, optional MCP configuration, CLI fallback |
 
-## Install
-
-### Requirements
+## Requirements
 
 - Python 3.13 or newer; Python 3.14 is recommended
 - Git
 
-Check Python before installing:
-
 ```bash
 python3 --version
 ```
+
+## Install
 
 ### Codex
 
@@ -72,8 +64,7 @@ codex plugin marketplace add CongBao/failure-memory
 codex plugin add failure-memory@failure-memory
 ```
 
-Start a new Codex task after installation so the skills, hooks, and MCP server are
-loaded.
+Start a new Codex task after installation.
 
 ### Claude Code
 
@@ -82,7 +73,7 @@ claude plugin marketplace add CongBao/failure-memory
 claude plugin install failure-memory@failure-memory
 ```
 
-Run `/reload-plugins` in an active Claude Code session, or start a new session.
+Run `/reload-plugins` or start a new session.
 
 ### GitHub Copilot CLI
 
@@ -90,254 +81,175 @@ Run `/reload-plugins` in an active Claude Code session, or start a new session.
 copilot plugin install CongBao/failure-memory
 ```
 
-This direct GitHub installation uses the repository's Copilot plugin manifest. The
-repository can also be added as a Copilot marketplace for browsing and managed updates.
-Start a new Copilot CLI session after installation.
+Start a new Copilot CLI session.
 
-### Cursor
-
-Failure Memory includes a Cursor plugin projection. Until it is listed in the public
-Cursor Marketplace, install it as a local plugin:
+### GitHub Copilot Chat in VS Code
 
 ```bash
 git clone https://github.com/CongBao/failure-memory.git
-mkdir -p ~/.cursor/plugins/local
-ln -s "$PWD/failure-memory" ~/.cursor/plugins/local/failure-memory
+cd failure-memory
+python3 scripts/install_harness.py --target copilot-vscode --apply
 ```
 
-Restart Cursor or run **Developer: Reload Window**. Teams and Enterprise users can also
-import this repository from **Dashboard → Plugins → Add Marketplace**.
+Restart VS Code or run **Developer: Reload Window**. The installer preserves existing
+servers in the VS Code user `mcp.json`, adds the managed Failure Memory server, and
+projects both skills under `~/.copilot/skills`.
 
-### Duplicate-safe multi-agent setup
+### Cursor
 
-Repository checkouts and release bundles include an installer that inspects the stable
-plugin identity in each host before changing anything. It reports `install`, `update`,
-`noop`, or `conflict`; repeated targets are collapsed and a conflict is never overwritten.
-Because all hosts share one schema, an apply also stops if an installed but omitted host
-has an older Failure Memory version.
+```bash
+git clone https://github.com/CongBao/failure-memory.git
+cd failure-memory
+python3 scripts/install_harness.py --target cursor --apply
+```
 
-Preview changes:
+Restart Cursor or run **Developer: Reload Window**.
+
+### Another agent
+
+Install the two skills into the agent's skill root:
+
+```bash
+python3 scripts/install_harness.py \
+  --target generic \
+  --skills-dir /path/to/agent/skills \
+  --agent-name my-agent \
+  --apply
+```
+
+If the agent supports MCP JSON configuration, add its file:
+
+```bash
+python3 scripts/install_harness.py \
+  --target generic \
+  --skills-dir /path/to/agent/skills \
+  --mcp-config /path/to/mcp.json \
+  --agent-name my-agent \
+  --apply
+```
+
+Without `--mcp-config`, the installed skills use their adjacent CLI fallback. A harness
+must support either MCP tool calls or shell execution to access external memory.
+
+### Install several local projections safely
+
+Preview:
 
 ```bash
 python3 scripts/install_harness.py \
   --target codex \
   --target claude-code \
-  --target copilot \
+  --target copilot-cli \
+  --target copilot-vscode \
   --target cursor
 ```
 
-Apply the same plan:
+Apply:
 
 ```bash
 python3 scripts/install_harness.py \
   --target codex \
   --target claude-code \
-  --target copilot \
+  --target copilot-cli \
+  --target copilot-vscode \
   --target cursor \
   --apply
 ```
 
-Only include hosts installed on the current machine. Every host reports the same
-`global_store` path. The installer never creates a harness-specific memory database.
+The installer reports `install`, `update`, `noop`, or `conflict`. It does not overwrite
+an unmanaged skill or MCP entry, and repeated targets do not create duplicate
+installations.
 
-## How to use it
+## Use
 
-Failure Memory provides two agent skills:
+You can speak naturally. The agent loads the appropriate skill.
 
-- **Recall failure lessons** before risky, repeated, or failure-prone work.
-- **Record an agent failure** after a real mismatch has been confirmed.
-
-You can ask naturally; you do not need to call database tools yourself.
-
-### 1. Recall lessons before work
-
-Example prompts:
+### Recall lessons before risky work
 
 ```text
 Before changing this installer, recall any relevant failure lessons.
 ```
 
-```text
-Check Failure Memory for lessons about plugin identity and duplicate installs.
-```
+The skill makes one bounded recall call and applies at most three returned lessons as
+proposed cautions.
 
-Recall is exact-first, then similarity-based. Results come from the global personal
-store, even when another supported agent recorded the lesson.
-
-### 2. Evaluate a possible failure
-
-After something goes wrong, ask the agent to evaluate it:
+### Record a possible failure
 
 ```text
-Evaluate whether this was a real failure. Do not record it if I only changed or
-clarified the requirement.
+Check whether this was a real failure and remember it if warranted. Find the root cause
+and recommend where to fix it. Do not treat my new requirements as failures.
 ```
 
-The evaluation distinguishes:
+The skill reconstructs only the minimum evidence and calls `remember_failure` once.
+Internally the service:
 
-- real failures;
-- requirement updates;
-- requirement clarifications;
-- preference updates;
-- mixed or uncertain feedback.
+1. distinguishes a real failure from a requirement update, clarification, preference,
+   mixed case, or uncertain case;
+2. stores rejected false-positive capture attempts for measurement without creating a
+   lesson;
+3. records one evidence-bounded cause and proposed repair;
+4. reuses an exact lesson or records related work for later generalization;
+5. appends the incident, proposed lesson, and operation latency telemetry.
 
-Rejected and deferred evaluations remain auditable, but they do not become incidents or
-lessons.
+For mixed feedback, only the prior-invariant mismatch enters memory. New work stays in
+the normal requirement workflow.
 
-### 3. Diagnose the root cause
+### CLI fallback
 
-For an accepted failure, the agent records an evidence-bounded causal assessment before
-searching for related lessons:
-
-```text
-Find the root cause of this accepted failure. Identify the most specific inspectable
-skill, agent instruction, project rule, system instruction, hook, tool contract,
-application, adapter, schema, test, harness, model, or external dependency involved.
-Recommend where to fix it and how to verify the repair. Do not guess.
-```
-
-Each assessment has exactly one primary factor, up to three contributing factors, and
-one to three proposed repairs. Component references are portable names such as
-`skill:record-agent-failure` or `hook:user-prompt-submit`, never private absolute paths.
-
-### 4. Review and record the lesson
-
-If the evaluation is accepted, ask the agent to complete the second review:
-
-```text
-Review this accepted failure against existing lessons. Reuse an exact match, propose a
-carefully generalized lesson when justified, or keep it distinct.
-```
-
-Then explicitly approve recording:
-
-```text
-Record the reviewed failure and proposed prevention lesson.
-```
-
-The plugin stores immutable incidents and versioned lessons. Existing history is
-preserved rather than overwritten.
-
-### 5. Give feedback on recalls and repairs
-
-Recall feedback is important because it tells the memory which lessons actually help:
-
-```text
-That recalled lesson was useful and prevented the same failure. Record the outcome.
-```
-
-```text
-That lesson was a false positive for this task. Record that outcome.
-```
-
-Failure Memory stores append-only recall attempts, candidates, selections, outcomes,
-false positives, and missed-relevant feedback. It does not store raw recall prompts.
-
-You can also report what happened to a proposed root-cause repair:
-
-```text
-The recommended hook change was applied and verified effective. Record that repair
-outcome with the evidence.
-```
-
-Repair history is append-only and distinguishes applied, rejected, partially applied,
-verified effective, verified ineffective, recurrence observed, and superseded outcomes.
-
-### 6. Review broader lesson proposals
-
-Semantic clustering only proposes groups; it cannot merge lessons. A proposal becomes
-eligible for the weak cluster recall channel only after an append-only human or agent
-review explicitly accepts it.
-
-List pending and reviewed proposals:
+The same one-call contract is available directly:
 
 ```bash
-uv run failure-memory learning proposals
+python3 scripts/failure_memory_cli.py remember --stdin
 ```
 
-From a repository checkout with `uv`, append a decision from a JSON file:
+Pass one JSON object on standard input. The launcher automatically selects the validated
+private adapter runtime when one is installed.
+
+## Search
+
+Failure Memory supports:
+
+- exact signature lookup;
+- SQL/FTS5 lexical lookup;
+- local sqlite-vec semantic lookup;
+- application-level hybrid ranking;
+- reviewed cluster recall.
+
+Optional vector dependencies and the embedding model live under the global adapter
+directory. Install them explicitly outside an agent recording call:
 
 ```bash
-uv run failure-memory learning review --input review.json
+python3 scripts/failure_memory_cli.py adapters plan
+python3 scripts/failure_memory_cli.py adapters install
+python3 scripts/failure_memory_cli.py index build
 ```
 
-For example:
+If semantic search is unavailable, recall degrades to lexical search and recording marks
+semantic reconciliation as pending.
 
-```json
-{
-  "proposal_id": "lgp_example",
-  "decision": "accept",
-  "rationale_code": "reviewed_shared_invariant"
-}
-```
+## Administration
 
-Use `accept`, `reject`, or `defer` and include a machine-readable rationale code. The
-proposal retains its original supporting lesson-version IDs. An accepted review may also
-include one broader **proposed** lesson; source lessons and incidents stay unchanged. A
-terminal accept or reject cannot be rewritten.
-
-### 7. Run the offline learning evaluation
-
-The release includes a synthetic corpus that checks failure qualification, exact,
-lexical, semantic, hybrid, reviewed-cluster, and negative no-injection behavior. Run it
-from a repository checkout with `uv`:
+Administrative operations are intentionally not advertised to every LLM. Use the CLI:
 
 ```bash
-uv run failure-memory learning evaluate --corpus evals/v0.5-core.json
+python3 scripts/failure_memory_cli.py doctor
+python3 scripts/failure_memory_cli.py recording-metrics
+python3 scripts/failure_memory_cli.py recall-metrics
+python3 scripts/failure_memory_cli.py learning-metrics
 ```
-
-Reports are written under the private Failure Memory data root, not the repository. A
-passing report is evidence only: its state remains `shadow` and it never activates
-production feedback ranking.
-
-### 8. Check health and learning metrics
-
-Example prompts:
-
-```text
-Check Failure Memory health and retrieval status.
-```
-
-```text
-Show recall feedback coverage, usefulness, false-positive, and missed-relevant metrics.
-```
-
-## Search modes
-
-Exact signature and SQLite FTS5 lexical search work without third-party dependencies.
-Optional semantic search uses local `sqlite-vec` and FastEmbed, and hybrid search fuses
-lexical and vector rankings. Root-cause layer, failure mode, and repair-target layer are
-included in indexed lesson text and can also be used as exact structured recall filters.
-
-Semantic dependencies and the embedding model are installed only after explicit
-approval:
-
-```bash
-uv run failure-memory adapters plan
-uv run failure-memory adapters install
-uv run failure-memory index build
-```
-
-## Prompt hooks
-
-Codex and Claude Code run a bounded `UserPromptSubmit` hook that reminds the model to
-check whether a correction is evidence of a prior failure or merely new information. The
-hook emits static guidance only: it does not echo, write, embed, or retain the submitted
-prompt. Copilot CLI and Cursor currently use session-start guidance because their prompt
-hook outputs do not provide the same safe model-context contract.
 
 ## Local data and privacy
 
-Failure Memory is local-first. It does not require a hosted database or cloud account.
-The default global data root is:
+The append-only event store, derived indexes, embedding model, and adapter runtime are
+kept under one owner-private data root:
 
 - macOS: `~/Library/Application Support/failure-memory`
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/failure-memory`
 - Windows: `%LOCALAPPDATA%\FailureMemory`
 
-Back up the event-store database; indexes, models, and adapter environments can be
-rebuilt. Recognized credentials and private keys are redacted, but do not submit secrets,
-personal data, raw transcripts, or unnecessary private paths.
+Back up the event-store database. Derived indexes and adapter environments can be
+rebuilt. Failure Memory redacts recognized credentials, but agents should not submit raw
+prompts, secrets, personal data, full transcripts, or unnecessary private paths.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute and [SECURITY.md](SECURITY.md) to
 report a vulnerability.

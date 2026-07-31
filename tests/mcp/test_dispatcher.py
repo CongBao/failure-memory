@@ -50,6 +50,38 @@ def _candidate(**changes: object) -> dict[str, object]:
     return candidate
 
 
+def _remember_candidate(**changes: object) -> dict[str, object]:
+    candidate: dict[str, object] = {
+        "summary": "The agent bypassed the installed public operation.",
+        "classification": "real_failure",
+        "expectation": {
+            "invariant": "Use the installed public operation directly.",
+            "source": "repository_contract",
+            "evidence": "The loaded skill named the operation before the outcome.",
+        },
+        "observed": {
+            "outcome": "The agent inspected source and called a private function.",
+            "impact": "The workflow consumed unnecessary time and context.",
+        },
+        "cause": {
+            "layer": "tool_contract",
+            "failure_mode": "not_loaded",
+            "component": "Failure Memory MCP",
+            "evidence": "The harness did not expose the registered operation.",
+            "recommended_change": "Provide one stable CLI fallback.",
+            "verification": "Replay from a harness without native MCP registration.",
+            "confidence": "high",
+        },
+        "lesson": {
+            "rule": "Use one public operation without implementation discovery.",
+            "prevention": "Invoke the stable fallback when MCP is unavailable.",
+            "verification": "Observe one call and no source or database inspection.",
+        },
+    }
+    candidate.update(changes)
+    return candidate
+
+
 def _drafts(capture_attempt_id: str, **changes: object) -> dict[str, object]:
     arguments: dict[str, object] = {
         "capture_attempt_id": capture_attempt_id,
@@ -156,6 +188,71 @@ def test_missing_candidate_field_is_an_invalid_arguments_result(
         "error": {"code": "invalid_arguments", "message": "summary is required"}
     }
     _assert_valid_tool_result("evaluate_failure_candidate", result)
+
+
+def test_remember_failure_runs_the_complete_recording_workflow_once(
+    service: FailureMemoryService,
+) -> None:
+    result = dispatch_tool("remember_failure", _remember_candidate(), service)
+
+    _assert_envelope(result)
+    _assert_valid_tool_result("remember_failure", result)
+    payload = result["structuredContent"]
+    assert payload["status"] == "recorded"
+    assert payload["decision"] == "accept"
+    assert payload["deduplication_status"] == "distinct"
+    assert str(payload["incident_id"]).startswith("inc_")
+    assert str(payload["lesson_version_id"]).startswith("lv_")
+    assert str(payload["causal_assessment_id"]).startswith("cas_")
+    assert service.metrics()["capture_attempt"] == 1
+    assert service.metrics()["incident"] == 1
+    assert service.recording_metrics()["operation_count"] == 1
+
+
+def test_remember_failure_records_requirement_false_positive_without_a_lesson(
+    service: FailureMemoryService,
+) -> None:
+    result = dispatch_tool(
+        "remember_failure",
+        {
+            "summary": "The user added a new requirement.",
+            "classification": "requirement_update",
+        },
+        service,
+    )
+
+    _assert_envelope(result)
+    payload = result["structuredContent"]
+    assert payload["status"] == "not_failure"
+    assert payload["decision"] == "reject"
+    assert payload["incident_id"] is None
+    assert service.metrics()["capture_attempt"] == 1
+    assert service.metrics()["incident"] == 0
+    assert service.recording_metrics()["operations_by_status"] == {"not_failure": 1}
+    assert service.recording_metrics()["operations_by_harness"] == {"pytest": 1}
+    assert service.recording_metrics()["operations_by_decision"] == {"reject": 1}
+    assert service.recording_metrics()["operations_by_deduplication"] == {"not_run": 1}
+    assert service.recording_metrics()["operations_by_semantic_status"] == {"not_run": 1}
+
+
+def test_remember_failure_returns_actionable_missing_evidence(
+    service: FailureMemoryService,
+) -> None:
+    arguments = _remember_candidate()
+    arguments.pop("cause")
+
+    result = dispatch_tool("remember_failure", arguments, service)
+
+    assert result["isError"] is True
+    assert result["structuredContent"] == {
+        "error": {
+            "code": "missing_failure_evidence",
+            "message": "cause is required for real_failure",
+            "field": "cause",
+            "expected": "cause object",
+        }
+    }
+    _assert_valid_tool_result("remember_failure", result)
 
 
 def test_accepted_failure_records_cause_repair_and_outcome_before_lesson_review(
@@ -480,13 +577,14 @@ def test_unexpected_service_exception_is_sanitized_and_logged(
 
     result = dispatch_tool("evaluate_failure_candidate", _candidate(), _ExplodingService())
 
-    assert result == {
-        "content": [{"type": "text", "text": "Internal failure-memory error."}],
-        "structuredContent": {
-            "error": {"code": "internal_error", "message": "Internal failure-memory error."}
-        },
-        "isError": True,
-    }
+    assert result["content"] == [
+        {"type": "text", "text": "Internal failure-memory error."}
+    ]
+    assert result["isError"] is True
+    error = result["structuredContent"]["error"]
+    assert error["code"] == "internal_error"
+    assert error["message"] == "Internal failure-memory error."
+    assert str(error["trace_id"]).startswith("err_")
     assert "secret-should" not in str(result)
     dispatcher_records = [
         record for record in caplog.records if record.name == "failure_memory.mcp.dispatcher"
@@ -495,9 +593,10 @@ def test_unexpected_service_exception_is_sanitized_and_logged(
     assert dispatcher_records[0].exc_info is not None
     assert dispatcher_records[0].exc_info[1] is not None
     assert "secret-should-never-reach-client" in str(dispatcher_records[0].exc_info[1])
-    assert dispatcher_records[0].getMessage() == (
-        "Unexpected failure-memory MCP tool failure for evaluate_failure_candidate"
+    assert dispatcher_records[0].getMessage().startswith(
+        "Unexpected failure-memory MCP tool failure for evaluate_failure_candidate "
     )
+    assert str(error["trace_id"]) in dispatcher_records[0].getMessage()
     _assert_valid_tool_result("evaluate_failure_candidate", result)
 
 

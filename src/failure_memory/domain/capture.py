@@ -54,6 +54,8 @@ class FailureCandidate:
     controllable_with_prior_information: bool
     durable_lesson: bool
     failure_portion_summary: str | None = None
+    expectation_preexisted: bool | None = None
+    expectation_evidence: str | None = None
 
 
 @dataclass(frozen=True)

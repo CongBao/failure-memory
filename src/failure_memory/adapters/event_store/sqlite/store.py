@@ -31,6 +31,7 @@ from failure_memory.domain.causal import (
     RepairOutcome,
     RepairRecommendationDraft,
 )
+from failure_memory.domain.fast_capture import RecordingTrace
 from failure_memory.domain.ids import new_id
 from failure_memory.domain.learning import (
     ClusterRunResult,
@@ -122,8 +123,8 @@ class SQLiteEventStore(EventStorePort):
                     session_fingerprint, provenance, redaction_state, summary, classification,
                     decision, confidence, reason_codes_json, expectation_source,
                     expectation_established_at, observed_outcome_at, failure_portion_summary,
-                    policy_version
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    policy_version, expectation_preexisted, expectation_evidence
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     capture_id,
@@ -146,11 +147,173 @@ class SQLiteEventStore(EventStorePort):
                     _timestamp(candidate.observed_outcome_at),
                     candidate.failure_portion_summary,
                     assessment.policy_version,
+                    (
+                        None
+                        if candidate.expectation_preexisted is None
+                        else int(candidate.expectation_preexisted)
+                    ),
+                    candidate.expectation_evidence,
                 ),
             )
 
         self._retry_busy_write(insert)
         return capture_id
+
+    def append_recording_trace(
+        self,
+        trace: RecordingTrace,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+    ) -> None:
+        def append() -> None:
+            self.connection.execute(
+                """
+                INSERT INTO failure_recording_operation(
+                    id, schema_version, created_at, source_harness,
+                    workspace_fingerprint, session_fingerprint, provenance,
+                    transport, workflow_version, status, decision,
+                    deduplication_status, semantic_status, total_latency_ms,
+                    qualification_latency_ms, causal_latency_ms,
+                    deduplication_latency_ms, persistence_latency_ms,
+                    capture_attempt_id, incident_id, lesson_version_id,
+                    error_code, input_tokens, output_tokens
+                ) VALUES (
+                    ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    trace.operation_id,
+                    _timestamp(created_at),
+                    context.harness,
+                    context.workspace_fingerprint,
+                    context.session_fingerprint,
+                    _PROVENANCE,
+                    trace.transport,
+                    trace.workflow_version,
+                    trace.status.value,
+                    trace.decision.value,
+                    trace.deduplication_status.value,
+                    trace.semantic_status,
+                    trace.total_latency_ms,
+                    trace.qualification_latency_ms,
+                    trace.causal_latency_ms,
+                    trace.deduplication_latency_ms,
+                    trace.persistence_latency_ms,
+                    trace.capture_attempt_id,
+                    trace.incident_id,
+                    trace.lesson_version_id,
+                    trace.error_code,
+                    trace.input_tokens,
+                    trace.output_tokens,
+                ),
+            )
+
+        self._retry_busy_write(append)
+
+    def recording_metrics(self) -> Mapping[str, object]:
+        total = _scalar_count(self.connection, "SELECT COUNT(*) FROM failure_recording_operation")
+        rows = self.connection.execute(
+            """
+            SELECT status, COUNT(*) AS operation_count
+            FROM failure_recording_operation
+            GROUP BY status
+            ORDER BY status
+            """
+        ).fetchall()
+        transport_rows = self.connection.execute(
+            """
+            SELECT transport, COUNT(*) AS operation_count
+            FROM failure_recording_operation
+            GROUP BY transport
+            ORDER BY transport
+            """
+        ).fetchall()
+        harness_rows = self.connection.execute(
+            """
+            SELECT source_harness, COUNT(*) AS operation_count
+            FROM failure_recording_operation
+            GROUP BY source_harness
+            ORDER BY source_harness
+            """
+        ).fetchall()
+        decision_rows = self.connection.execute(
+            """
+            SELECT decision, COUNT(*) AS operation_count
+            FROM failure_recording_operation
+            GROUP BY decision
+            ORDER BY decision
+            """
+        ).fetchall()
+        deduplication_rows = self.connection.execute(
+            """
+            SELECT deduplication_status, COUNT(*) AS operation_count
+            FROM failure_recording_operation
+            GROUP BY deduplication_status
+            ORDER BY deduplication_status
+            """
+        ).fetchall()
+        semantic_rows = self.connection.execute(
+            """
+            SELECT semantic_status, COUNT(*) AS operation_count
+            FROM failure_recording_operation
+            GROUP BY semantic_status
+            ORDER BY semantic_status
+            """
+        ).fetchall()
+        latency = self.connection.execute(
+            """
+            SELECT COALESCE(AVG(total_latency_ms), 0) AS average_latency_ms,
+                   COALESCE(MAX(total_latency_ms), 0) AS maximum_latency_ms,
+                   COALESCE(AVG(qualification_latency_ms), 0)
+                       AS average_qualification_latency_ms,
+                   COALESCE(AVG(causal_latency_ms), 0)
+                       AS average_causal_latency_ms,
+                   COALESCE(AVG(deduplication_latency_ms), 0)
+                       AS average_deduplication_latency_ms,
+                   COALESCE(AVG(persistence_latency_ms), 0)
+                       AS average_persistence_latency_ms
+            FROM failure_recording_operation
+            """
+        ).fetchone()
+        return {
+            "operation_count": total,
+            "operations_by_status": {
+                str(row["status"]): int(row["operation_count"]) for row in rows
+            },
+            "operations_by_transport": {
+                str(row["transport"]): int(row["operation_count"])
+                for row in transport_rows
+            },
+            "operations_by_harness": {
+                str(row["source_harness"]): int(row["operation_count"])
+                for row in harness_rows
+            },
+            "operations_by_decision": {
+                str(row["decision"]): int(row["operation_count"])
+                for row in decision_rows
+            },
+            "operations_by_deduplication": {
+                str(row["deduplication_status"]): int(row["operation_count"])
+                for row in deduplication_rows
+            },
+            "operations_by_semantic_status": {
+                str(row["semantic_status"]): int(row["operation_count"])
+                for row in semantic_rows
+            },
+            "average_latency_ms": round(float(latency["average_latency_ms"]), 3),
+            "maximum_latency_ms": int(latency["maximum_latency_ms"]),
+            "average_stage_latency_ms": {
+                stage: round(float(latency[column]), 3)
+                for stage, column in (
+                    ("qualification", "average_qualification_latency_ms"),
+                    ("causal", "average_causal_latency_ms"),
+                    ("deduplication", "average_deduplication_latency_ms"),
+                    ("persistence", "average_persistence_latency_ms"),
+                )
+            },
+        }
 
     def get_capture_decision(self, capture_attempt_id: str) -> CaptureDecision:
         row = self.connection.execute(

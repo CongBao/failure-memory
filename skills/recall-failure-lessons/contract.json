@@ -1,174 +1,36 @@
 {
-  "contract_version": 4,
+  "contract_version": 5,
   "policy_kind": "recall_failure",
   "skill": {
     "name": "recall-failure-lessons",
-    "description": "Use before risky or recurring work, or when a current task resembles a previously recorded failure and concrete task evidence can support a bounded lesson lookup."
+    "description": "Use before risky or recurring work, or when a current task resembles a previously recorded failure and the task provides concrete evidence for a bounded lookup."
   },
   "policy": {
-    "core": {
-      "mode": "exact_first_bounded_hybrid",
-      "similarity_search": true,
-      "returned_lesson_role": "traceable_caution",
-      "manufacture_memory": false,
-      "manufacture_authority": false,
-      "automatic_merge": false
-    },
-    "evidence": {
-      "context_field": "text",
-      "discriminator_fields": [
-        "expected_invariant",
-        "controllable_cause",
-        "prevention_action",
-        "component"
-      ],
-      "minimum_discriminators": 1,
-      "source": "current_task_evidence",
-      "allow_inference": false,
-      "query_exclusions": [
-        "raw_prompts",
-        "secrets",
-        "unnecessary_user_text"
-      ],
-      "forbidden_fill_basis": [
-        "resemblance_alone",
-        "recurrence_anxiety",
-        "authority_guess"
-      ]
-    },
-    "tools": {
-      "recall": "recall_failure_lessons",
-      "feedback": "record_recall_outcome"
-    },
-    "lookup": {
-      "max_calls": 1,
-      "default_mode": "auto",
-      "exact_first": true,
-      "allow_modes": [
-        "auto",
-        "exact",
-        "lexical",
-        "semantic",
-        "hybrid"
-      ],
-      "default_top_k": 3,
-      "hard_max_top_k": 5,
-      "allow_bulk": false,
-      "allow_query_broadening": false
-    },
-    "workflow": {
-      "entry": "check_evidence",
-      "edges": [
-        {
-          "id": "sufficient_evidence_to_recall",
-          "from": "check_evidence",
-          "to": "recall",
-          "condition": "context_and_discriminator_present"
-        },
-        {
-          "id": "insufficient_evidence_to_continue",
-          "from": "check_evidence",
-          "to": "continue_without_guidance",
-          "condition": "evidence_insufficient"
-        },
-        {
-          "id": "matches_to_return",
-          "from": "recall",
-          "to": "return_cautions",
-          "condition": "matches_returned"
-        },
-        {
-          "id": "no_match_to_continue",
-          "from": "recall",
-          "to": "continue_without_guidance",
-          "condition": "no_match_or_setup_required"
-        }
-      ]
-    },
-    "fallback": {
-      "semantic_setup_required": "report_setup_required",
-      "hybrid_without_semantic": "accept_degraded_lexical",
-      "automatic_install": false,
-      "invented_guidance": false
-    },
-    "result": {
-      "max_lessons": 3,
-      "hard_max_lessons": 5,
-      "identifier_required": true,
-      "evidence_required": true,
-      "retrieval_channel_required": true,
-      "authority": "proposed_caution",
-      "allow_verified": false,
-      "validate_against_current_task": true,
-      "actions_to_validate": [
-        "prevention",
-        "verification"
-      ]
-    },
-    "feedback": {
-      "only_after_observable_outcome": true,
-      "allowed_outcomes": [
-        "useful",
-        "not_useful",
-        "false_positive",
-        "prevented_recurrence",
-        "contradicted_current_task",
-        "stale",
-        "ignored",
-        "missed_relevant",
-        "unknown"
-      ],
-      "false_positive_supported": true,
-      "do_not_invent": true
-    },
-    "decision_summary": {
-      "all_slots_required": true,
-      "brevity_may_omit": false,
-      "classifications": [
-        {
-          "id": "insufficient_evidence",
-          "intended_call": "none",
-          "required_handling": "Continue without invented memory guidance; resemblance alone cannot supply a discriminator."
-        },
-        {
-          "id": "bounded_recall",
-          "intended_call": "recall_once",
-          "required_handling": "Use at most three returned IDs as proposed cautions, validate their evidence against the current task, and do not merge lessons automatically."
-        }
-      ],
-      "every_phrase_required": true
-    },
-    "rationalization_checks": [
-      {
-        "temptation": "It resembles a costly old incident, so query broadly.",
-        "response": "Require task context and a concrete discriminator; resemblance alone is insufficient."
-      },
-      {
-        "temptation": "Load every lesson to be safe.",
-        "response": "Use one bounded recall call and return at most three cautions."
-      },
-      {
-        "temptation": "A high semantic score proves the same failure.",
-        "response": "Similarity proposes a caution; it never proves identity or authorizes an automatic merge."
-      },
-      {
-        "temptation": "Record positive feedback to improve metrics.",
-        "response": "Record feedback only after an observable outcome, including false positives when applicable."
-      },
-      {
-        "temptation": "Leadership says the returned lesson is policy.",
-        "response": "Returned state and current-task evidence, not pressure, determine authority."
-      }
+    "tool": "recall_failure_lessons",
+    "fallback_launcher": "scripts/failure_memory_cli.py",
+    "fallback_arguments": [
+      "recall",
+      "--input",
+      "-"
     ],
-    "stop_conditions": [
-      "fabricating_query_evidence",
-      "including_sensitive_query_text",
-      "bulk_loading_lessons",
-      "returning_more_than_three_lessons",
-      "omitting_identifiers_or_evidence",
-      "automatic_lesson_merge",
-      "inventing_recall_feedback",
-      "promoting_proposed_guidance"
-    ]
+    "default_mode": "auto",
+    "default_top_k": 3,
+    "maximum_top_k": 3,
+    "call_limit": 1,
+    "required_context": "text",
+    "discriminators": [
+      "expected_invariant",
+      "controllable_cause",
+      "prevention_action",
+      "component"
+    ],
+    "sensitive_exclusions": [
+      "raw prompts",
+      "secrets",
+      "unnecessary user text"
+    ],
+    "allow_query_broadening": false,
+    "allow_dependency_install": false,
+    "lesson_authority": "proposed caution"
   }
 }

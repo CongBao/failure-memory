@@ -790,12 +790,10 @@ def test_service_internal_failure_is_sanitized_without_dispatcher_traceback(
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert json.loads(captured.out) == {
-        "error": {
-            "code": "internal_error",
-            "message": "Internal failure-memory error.",
-        }
-    }
+    error = json.loads(captured.out)["error"]
+    assert error["code"] == "internal_error"
+    assert error["message"] == "Internal failure-memory error."
+    assert str(error["trace_id"]).startswith("err_")
     assert captured.err == "failure-memory: Internal failure-memory error.\n"
     assert secret not in captured.out + captured.err
     assert "Traceback" not in captured.err
@@ -803,6 +801,49 @@ def test_service_internal_failure_is_sanitized_without_dispatcher_traceback(
     assert [
         record for record in caplog.records if record.name == "failure_memory.mcp.dispatcher"
     ] == []
+
+
+def test_remember_cli_disables_semantic_adapter_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    created_with: dict[str, object] = {}
+
+    class Service:
+        def close(self) -> None:
+            pass
+
+    def create_service(**kwargs: object) -> Service:
+        created_with.update(kwargs)
+        return Service()
+
+    envelope = {
+        "content": [{"type": "text", "text": "Failure-memory result: not_failure."}],
+        "structuredContent": {"status": "not_failure"},
+        "isError": False,
+    }
+    monkeypatch.setattr(cli_module, "create_local_service", create_service)
+    monkeypatch.setattr(cli_module, "dispatch_tool", lambda *args, **kwargs: envelope)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "summary": "The user added a new requirement.",
+                    "classification": "requirement_update",
+                }
+            )
+        ),
+    )
+
+    exit_code = cli_module.main(["remember", "--stdin"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert json.loads(captured.out) == {"status": "not_failure"}
+    assert captured.err == ""
+    assert created_with == {"enable_semantic": False}
 
 
 def test_cli_serializes_busy_result_with_retryable_exit_status(

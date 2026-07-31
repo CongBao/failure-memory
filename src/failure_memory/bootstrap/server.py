@@ -7,7 +7,7 @@ import logging
 import math
 import os
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO, cast
 
@@ -16,7 +16,7 @@ from failure_memory.adapters.dependency_runtime.manager import AdapterRuntimeMan
 from failure_memory.adapters.harness.context import resolve_data_root
 from failure_memory.application.service import FailureMemoryService, create_local_service
 from failure_memory.mcp.dispatcher import dispatch_tool
-from failure_memory.mcp.tools import TOOLS
+from failure_memory.mcp.tools import PUBLIC_TOOLS, TOOLS, ToolDefinition
 
 from .stdio import decode_json, write_message
 
@@ -38,10 +38,18 @@ class McpServer:
     """Own the small MCP lifecycle and dispatch requests to one local service."""
 
     def __init__(
-        self, service: FailureMemoryService, *, dispatch: Dispatch = dispatch_tool
+        self,
+        service: FailureMemoryService,
+        *,
+        dispatch: Dispatch = dispatch_tool,
+        tools: Sequence[ToolDefinition] = PUBLIC_TOOLS,
+        advertise_output_schemas: bool = False,
     ) -> None:
         self._service = service
         self._dispatch = dispatch
+        self._tools = tuple(tools)
+        self._tool_names = frozenset(tool.name for tool in tools)
+        self._advertise_output_schemas = advertise_output_schemas
         self._initialize_received = False
         self.initialized = False
         self._closed = False
@@ -125,7 +133,17 @@ class McpServer:
             return _error(request_id, -32002, "Server not initialized")
         if not _params_are_object(request):
             return _error(request_id, -32602, "Invalid params")
-        return _result(request_id, {"tools": [tool.as_mcp_dict() for tool in TOOLS]})
+        return _result(
+            request_id,
+            {
+                "tools": [
+                    tool.as_mcp_dict(
+                        include_output_schema=self._advertise_output_schemas,
+                    )
+                    for tool in self._tools
+                ]
+            },
+        )
 
     def _tools_call(
         self, request_id: JsonRpcId, request: Mapping[str, object]
@@ -139,6 +157,8 @@ class McpServer:
         arguments = params.get("arguments", {})
         if not isinstance(name, str) or not name or not isinstance(arguments, Mapping):
             return _error(request_id, -32602, "Invalid params")
+        if name not in self._tool_names:
+            return _error(request_id, -32601, "Tool not found")
         result = self._dispatch(name, cast(Mapping[str, object], arguments), self._service)
         return _result(request_id, result)
 
@@ -289,7 +309,18 @@ def main() -> int:
     try:
         _maybe_reexec_with_adapter_runtime()
         service = create_local_service()
-        serve(McpServer(service), sys.stdin, sys.stdout)
+        tools = TOOLS if os.environ.get("FAILURE_MEMORY_MCP_PROFILE") == "admin" else PUBLIC_TOOLS
+        serve(
+            McpServer(
+                service,
+                tools=tools,
+                advertise_output_schemas=(
+                    os.environ.get("FAILURE_MEMORY_MCP_PROFILE") == "admin"
+                ),
+            ),
+            sys.stdin,
+            sys.stdout,
+        )
     except Exception:
         _LOGGER.error("Failure-memory MCP server could not start")
         return 1

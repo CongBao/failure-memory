@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -31,6 +32,7 @@ _COMMAND_TO_TOOL = {
     "metrics": "get_failure_memory_metrics",
     "recall-metrics": "get_failure_recall_metrics",
     "learning-metrics": "get_failure_learning_metrics",
+    "remember": "remember_failure",
     "evaluate": "evaluate_failure_candidate",
     "diagnose": "diagnose_failure_cause",
     "review": "review_failure_recording",
@@ -62,6 +64,26 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("metrics", help="return append-ledger record counts")
     subparsers.add_parser("recall-metrics", help="return recall telemetry record counts")
     subparsers.add_parser("learning-metrics", help="return measured recall quality")
+    subparsers.add_parser(
+        "recording-metrics",
+        help="return fast-recording operation counts and latency",
+    )
+    remember_parser = subparsers.add_parser(
+        "remember",
+        help="qualify and record one failure through the single-call workflow",
+    )
+    remember_input = remember_parser.add_mutually_exclusive_group()
+    remember_input.add_argument(
+        "--input",
+        metavar="FILE|-",
+        default="-",
+        help="read one JSON object from FILE; default is standard input",
+    )
+    remember_input.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read one JSON object from standard input",
+    )
     for command in (
         "evaluate",
         "diagnose",
@@ -259,6 +281,9 @@ def _run(
             raise CliOperationRejectedError from exc
         _emit(payload, stdout)
         return 0
+    if command == "recording-metrics":
+        _emit(service.recording_metrics(), stdout)
+        return 0
     tool_arguments: Mapping[str, object]
     if command in {
         "evaluate",
@@ -268,8 +293,10 @@ def _run(
         "repair-feedback",
         "recall",
         "feedback",
+        "remember",
     }:
-        tool_arguments = _read_input(cast(str, arguments.input), stdin)
+        location = "-" if command == "remember" and arguments.stdin else arguments.input
+        tool_arguments = _read_input(cast(str, location), stdin)
     else:
         tool_arguments = {}
     if command == "index":
@@ -285,6 +312,7 @@ def _run(
         tool_arguments,
         service,
         log_exceptions=False,
+        transport="cli",
     )
     payload = cast(Mapping[str, object], envelope["structuredContent"])
     _emit(payload, stdout)
@@ -328,6 +356,7 @@ def _run_adapters(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one local operation and emit exactly one JSON result on stdout."""
+    _maybe_reexec_with_adapter_runtime()
     try:
         arguments = _parser().parse_args(argv)
     except CliUsageError as exc:
@@ -343,7 +372,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "adapters":
             exit_code = _run_adapters(arguments, stdout=result_stdout)
         else:
-            service = create_local_service()
+            service = (
+                create_local_service(enable_semantic=False)
+                if arguments.command == "remember"
+                else create_local_service()
+            )
             exit_code = _run(
                 arguments,
                 service,
@@ -407,6 +440,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     sys.stderr.write(result_stderr.getvalue())
     sys.stderr.flush()
     return exit_code
+
+
+def _maybe_reexec_with_adapter_runtime() -> None:
+    manager = AdapterRuntimeManager(resolve_data_root())
+    ready_python = getattr(manager, "ready_python_executable", None)
+    if not callable(ready_python):
+        return
+    runtime_python = ready_python()
+    if runtime_python is None:
+        return
+    try:
+        already_running = Path(sys.executable).resolve() == runtime_python.resolve()
+    except OSError:
+        already_running = os.path.abspath(sys.executable) == os.path.abspath(runtime_python)
+    if already_running:
+        return
+    source_root = Path(__file__).resolve().parents[2]
+    environment = dict(os.environ)
+    existing_python_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(source_root)
+        if not existing_python_path
+        else os.pathsep.join((str(source_root), existing_python_path))
+    )
+    os.execve(
+        str(runtime_python),
+        [
+            str(runtime_python),
+            "-m",
+            "failure_memory.cli.main",
+            *sys.argv[1:],
+        ],
+        environment,
+    )
 
 
 if __name__ == "__main__":

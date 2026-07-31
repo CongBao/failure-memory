@@ -25,7 +25,7 @@ def test_harness_plugin_data_does_not_partition_the_global_store(tmp_path: Path)
 @pytest.mark.parametrize(
     ("environment", "expected"),
     [
-        ({"COPILOT_PLUGIN_DATA": "/copilot"}, "copilot"),
+        ({"COPILOT_PLUGIN_DATA": "/copilot"}, "copilot-cli"),
         ({"CURSOR_PLUGIN_ROOT": "/cursor"}, "cursor"),
         (
             {

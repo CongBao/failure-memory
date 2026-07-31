@@ -9,21 +9,22 @@ use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Evidence-bounded causal assessments with one primary factor, contributing factors,
-  portable component references, and proposed repair recommendations.
-- Append-only repair outcome history and causal coverage, layer, application,
-  effectiveness, and recurrence metrics.
-- Structured causal fields in lexical/vector documents, recall results, and recall
-  filters.
-- Prompt-submission failure checks for Codex and Claude Code that inject bounded static
-  guidance without retaining user prompts.
-- Shared-store migration capability markers and multi-harness installer protection
-  against omitted outdated projections.
+- One-call `remember_failure` qualification, causal diagnosis, exact deduplication,
+  persistence, and recording telemetry.
+- Portable adjacent CLI launchers for agents that cannot expose plugin MCP tools.
+- Managed GitHub Copilot Chat in VS Code and generic-agent projections.
+- Append-only recording-operation latency, outcome, harness, and transport metrics.
 
 ### Changed
 
-- The public recording workflow is now `evaluate → diagnose → review → record`.
-- The MCP surface now contains twenty-one schema-validated operations.
+- The normal MCP surface now advertises only `remember_failure` and
+  `recall_failure_lessons`; administrative operations remain available through the CLI
+  and an explicit MCP admin profile.
+- Recording performs exact reuse synchronously and defers semantic reconciliation, model
+  loading, and dependency installation so the agent call stays fast.
+- The recording and recall skills use one bounded call and forbid plugin discovery,
+  source inspection, direct SQLite access, private API imports, retries, and temporary
+  payload files.
 
 ## [0.5.0] - 2026-07-31
 

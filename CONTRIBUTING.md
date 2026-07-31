@@ -25,7 +25,8 @@ uv build
 - Keep domain and application layers independent of concrete vector databases and agent
   harnesses.
 - Put database, embedding, model, and index implementations under adapters.
-- Preserve the evaluate-before-diagnose-before-review-before-record gate.
+- Preserve the qualification, diagnosis, exact-review, and persistence gates behind the
+  one-call recording boundary.
 - Keep causal assessments evidence-bounded; store an explicit unknown instead of
   assigning blame without inspectable support.
 - Treat incidents as immutable and lessons as versioned, proposed guidance.

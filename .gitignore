@@ -24,6 +24,8 @@ coverage.xml
 /build/
 /dist/
 /docs/
+/plans/
+/specs/
 /site/
 /packaging/out/
 

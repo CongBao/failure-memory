@@ -49,7 +49,14 @@ _CAUSAL_TABLES = (
     "failure_causal_incident_relation",
     "failure_repair_outcome_event",
 )
-_TABLES = (*_CORE_TABLES, *_RECALL_TABLES, *_LEARNING_TABLES, *_CAUSAL_TABLES)
+_FAST_RECORDING_TABLES = ("failure_recording_operation",)
+_TABLES = (
+    *_CORE_TABLES,
+    *_RECALL_TABLES,
+    *_LEARNING_TABLES,
+    *_CAUSAL_TABLES,
+    *_FAST_RECORDING_TABLES,
+)
 
 
 class GlobalStoreImporter:
@@ -178,6 +185,15 @@ class GlobalStoreImporter:
                     value_maps=overrides,
                 )
             for table in _CAUSAL_TABLES:
+                if not _table_exists(source, table):
+                    continue
+                self._import_table(
+                    source,
+                    table,
+                    imported_counts,
+                    skipped_counts,
+                )
+            for table in _FAST_RECORDING_TABLES:
                 if not _table_exists(source, table):
                     continue
                 self._import_table(

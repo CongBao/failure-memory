@@ -83,13 +83,16 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
         "LICENSE",
         "README.md",
         "SECURITY.md",
+        "scripts/failure_memory_cli.py",
         "scripts/failure_memory_mcp.py",
         "scripts/failure_memory_hook.py",
         "scripts/install_harness.py",
         "skills/record-agent-failure/SKILL.md",
         "skills/record-agent-failure/contract.json",
+        "skills/record-agent-failure/scripts/failure_memory_cli.py",
         "skills/recall-failure-lessons/SKILL.md",
         "skills/recall-failure-lessons/contract.json",
+        "skills/recall-failure-lessons/scripts/failure_memory_cli.py",
         "src/failure_memory/bootstrap/server.py",
         ("src/failure_memory/adapters/event_store/sqlite/migrations/0001_initial.sql"),
         "build-manifest.json",
@@ -124,9 +127,12 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
     for relative in expected_hashed_paths:
         entry = inventory[relative]
         executable = relative in {
+            "scripts/failure_memory_cli.py",
             "scripts/failure_memory_hook.py",
             "scripts/failure_memory_mcp.py",
             "scripts/install_harness.py",
+            "skills/recall-failure-lessons/scripts/failure_memory_cli.py",
+            "skills/record-agent-failure/scripts/failure_memory_cli.py",
         }
         assert entry == {
             "sha256": hashlib.sha256((output / relative).read_bytes()).hexdigest(),
@@ -136,9 +142,12 @@ def test_bundle_contains_only_installable_runtime_projection(tmp_path: Path) -> 
     for path in output.rglob("*"):
         expected_mode = 0o755 if path.is_dir() else 0o644
         if path.relative_to(output).as_posix() in {
+            "scripts/failure_memory_cli.py",
             "scripts/failure_memory_hook.py",
             "scripts/failure_memory_mcp.py",
             "scripts/install_harness.py",
+            "skills/recall-failure-lessons/scripts/failure_memory_cli.py",
+            "skills/record-agent-failure/scripts/failure_memory_cli.py",
         }:
             expected_mode = 0o755
         assert path.stat(follow_symlinks=False).st_mode & 0o777 == expected_mode
@@ -289,7 +298,13 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "failure_memory_doctor", "arguments": {}},
+            "params": {
+                "name": "remember_failure",
+                "arguments": {
+                    "summary": "The user added a new requirement.",
+                    "classification": "requirement_update",
+                },
+            },
         },
     ]
     mcp_config = json.loads((output / ".mcp.json").read_text())
@@ -321,34 +336,14 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
     assert responses[0]["result"]["protocolVersion"] == "2025-11-25"
     tool_names = [tool["name"] for tool in responses[1]["result"]["tools"]]
     assert tool_names == [
-        "evaluate_failure_candidate",
-        "diagnose_failure_cause",
-        "review_failure_recording",
-        "record_failure_incident",
-        "record_failure_repair_outcome",
-        "find_related_failures",
+        "remember_failure",
         "recall_failure_lessons",
-        "record_recall_outcome",
-        "get_failure_memory_metrics",
-        "get_failure_recall_metrics",
-        "failure_memory_retrieval_status",
-        "build_failure_memory_index",
-        "get_failure_learning_metrics",
-        "failure_memory_store_status",
-        "transition_failure_lesson",
-        "run_failure_ranking_experiment",
-        "propose_failure_lesson_clusters",
-        "list_failure_generalization_proposals",
-        "review_failure_generalization_proposal",
-        "failure_memory_setup_status",
-        "failure_memory_doctor",
     ]
-    assert len(tool_names) == len(set(tool_names)) == 21
-    doctor = responses[2]["result"]["structuredContent"]
-    assert doctor["state"] == "lexical_ready"
-    assert doctor["integrity_check"] == "ok"
-    assert "database_path" not in doctor
-    assert str(tmp_path) not in json.dumps(doctor)
+    assert len(tool_names) == len(set(tool_names)) == 2
+    result = responses[2]["result"]["structuredContent"]
+    assert result["status"] == "not_failure"
+    assert result["decision"] == "reject"
+    assert str(tmp_path) not in json.dumps(result)
     assert _tree_state(output) == state_before
 
 
@@ -381,13 +376,14 @@ def test_fresh_packaged_hosts_share_one_global_store_identity(tmp_path: Path) ->
         },
     ]
     store_ids: set[str] = set()
-    for harness in ("codex", "claude-code", "copilot", "cursor"):
+    for harness in ("codex", "claude-code", "copilot-cli", "copilot-vscode", "cursor"):
         environment = {
             **os.environ,
             **server["env"],
             "FAILURE_MEMORY_HOME": str(runtime),
             "FAILURE_MEMORY_HARNESS": harness,
             "FAILURE_MEMORY_SESSION_ID": f"fresh-{harness}",
+            "FAILURE_MEMORY_MCP_PROFILE": "admin",
             "PYTHONPATH": "",
         }
         process = subprocess.run(
@@ -491,7 +487,13 @@ def test_packaged_launcher_uses_private_platform_global_store(
     shared_plugin_data.chmod(0o755)
     environment = os.environ.copy()
     environment.update(server["env"])
-    environment.update({"HOME": str(home), "PYTHONPATH": ""})
+    environment.update(
+        {
+            "HOME": str(home),
+            "FAILURE_MEMORY_MCP_PROFILE": "admin",
+            "PYTHONPATH": "",
+        }
+    )
     for name in ("FAILURE_MEMORY_HOME", "PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
         environment.pop(name, None)
     if explicit_codex_home:

@@ -179,7 +179,7 @@ def test_initialize_returns_capabilities_and_preserves_empty_string_id() -> None
     assert response["result"] == {
         "protocolVersion": "2025-11-25",
         "capabilities": {"tools": {"listChanged": False}},
-        "serverInfo": {"name": "failure-memory", "version": "0.6.0"},
+        "serverInfo": {"name": "failure-memory", "version": "0.7.0"},
         "instructions": (
             "Use failure memory only for real failures: an established expectation, "
             "an observed mismatch, and material impact or recurrence risk."
@@ -286,7 +286,7 @@ def test_tools_reject_requests_after_initialize_but_before_initialized_notificat
     }
 
 
-def test_tools_list_returns_all_immutable_tools_after_initialize() -> None:
+def test_tools_list_returns_only_the_two_fast_path_tools_after_initialize() -> None:
     server = _server()
     _complete_handshake(server)
 
@@ -294,30 +294,13 @@ def test_tools_list_returns_all_immutable_tools_after_initialize() -> None:
 
     assert response is not None
     tools = cast(dict[str, list[dict[str, object]]], response["result"])["tools"]
-    assert len(tools) == 21
+    assert len(tools) == 2
     assert {tool["name"] for tool in tools} == {
-        "evaluate_failure_candidate",
-        "diagnose_failure_cause",
-        "review_failure_recording",
-        "record_failure_incident",
-        "record_failure_repair_outcome",
-        "find_related_failures",
+        "remember_failure",
         "recall_failure_lessons",
-        "record_recall_outcome",
-        "get_failure_memory_metrics",
-        "get_failure_recall_metrics",
-        "failure_memory_retrieval_status",
-        "build_failure_memory_index",
-        "get_failure_learning_metrics",
-        "failure_memory_store_status",
-        "transition_failure_lesson",
-        "run_failure_ranking_experiment",
-        "propose_failure_lesson_clusters",
-        "list_failure_generalization_proposals",
-        "review_failure_generalization_proposal",
-        "failure_memory_setup_status",
-        "failure_memory_doctor",
     }
+    assert all("outputSchema" not in tool for tool in tools)
+    assert len(json.dumps(tools, separators=(",", ":"))) < 9_000
 
 
 def test_tools_call_returns_the_dispatcher_result_directly() -> None:
@@ -325,14 +308,14 @@ def test_tools_call_returns_the_dispatcher_result_directly() -> None:
     _complete_handshake(server)
 
     response = server.handle_line(
-        _request(3, "tools/call", {"name": "failure_memory_doctor", "arguments": {}})
+        _request(3, "tools/call", {"name": "remember_failure", "arguments": {}})
     )
 
     assert response == {
         "jsonrpc": "2.0",
         "id": 3,
         "result": {
-            "name": "failure_memory_doctor",
+            "name": "remember_failure",
             "arguments": {},
             "service": "FakeService",
         },
@@ -389,7 +372,7 @@ def test_dispatch_exception_is_logged_and_sanitized(caplog: pytest.LogCaptureFix
     _complete_handshake(server)
 
     response = server.handle_line(
-        _request(4, "tools/call", {"name": "failure_memory_doctor", "arguments": {}})
+        _request(4, "tools/call", {"name": "remember_failure", "arguments": {}})
     )
 
     assert response == {
@@ -408,7 +391,7 @@ def test_dispatch_result_with_non_finite_number_is_sanitized() -> None:
     _complete_handshake(server)
 
     response = server.handle_line(
-        _request(4, "tools/call", {"name": "failure_memory_doctor", "arguments": {}})
+        _request(4, "tools/call", {"name": "remember_failure", "arguments": {}})
     )
 
     assert response == {
@@ -717,7 +700,7 @@ def test_create_local_service_maps_pending_migration_contention_to_busy(
         "_migration_files",
         lambda: [
             *migrations,
-            (8, "0008_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
+            (9, "0009_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
         ],
     )
     real_connect = service_module.connect_sqlite

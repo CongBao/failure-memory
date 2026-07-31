@@ -9,25 +9,17 @@ import sys
 
 _MAX_INPUT_BYTES = 1_048_576
 _GUIDANCE = (
-    "Failure Memory is available through two separate skills. Before risky or recurring "
-    "work, use recall-failure-lessons only with concrete current-task evidence and apply "
-    "at most three results as proposed cautions. When feedback challenges an outcome, use "
-    "record-agent-failure: distinguish requirement updates and new details from real "
-    "failures, then run qualification, evidence-bounded causal diagnosis, and the required "
-    "generalization review before any record. Diagnose the root cause at the most specific "
-    "inspectable instruction, prompt, hook, tool, application, runtime, or external layer "
-    "and recommend where to repair it. Never persist raw prompts, merge automatically, or "
-    "treat a proposed lesson as verified."
+    "Failure Memory has two skills. Use recall-failure-lessons once before risky recurring "
+    "work when the task has concrete evidence. When feedback challenges an earlier outcome, "
+    "use record-agent-failure; it distinguishes new requirements from real failures and "
+    "calls remember_failure once. Never persist raw prompts or treat proposed lessons as verified."
 )
 _PROMPT_GUIDANCE = (
     "Check whether the just-submitted user message challenges an earlier agent outcome. "
-    "Corrective wording alone is not a failure: new requirements, newly supplied details, "
-    "first-time preferences, and ordinary refinements stay in the normal work flow. If the "
-    "message evidences a prior expectation, a controllable mismatch, material impact or "
-    "recurrence risk, and a durable lesson, use record-agent-failure. After qualification "
-    "accepts it, inspect evidence to locate the root cause and repair target before reviewing "
-    "similar lessons. Do not copy or persist the raw prompt, and do not infer a cause that "
-    "cannot be inspected."
+    "New requirements, new details, first-time preferences, and ordinary refinements are not "
+    "failures. If a prior expectation, controllable mismatch, impact or recurrence risk, and "
+    "durable lesson are evidenced, use record-agent-failure and make its one remember_failure "
+    "call. Do not copy the raw prompt or infer an uninspectable cause."
 )
 
 
@@ -36,7 +28,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--harness",
         required=True,
-        choices=("codex", "claude-code", "copilot", "cursor"),
+        choices=(
+            "codex",
+            "claude-code",
+            "copilot-cli",
+            "copilot-vscode",
+            "cursor",
+            "generic",
+        ),
     )
     parser.add_argument(
         "--event",
@@ -77,7 +76,7 @@ def main() -> int:
                 "additionalContext": guidance,
             }
         }
-    elif arguments.harness == "copilot":
+    elif arguments.harness == "copilot-cli":
         output = {"additionalContext": guidance}
     else:
         output = {"additional_context": guidance}

@@ -32,7 +32,7 @@ def test_host_manifests_share_one_identity_version_skills_and_mcp() -> None:
     values = [json.loads(path.read_text(encoding="utf-8")) for path in manifests]
 
     assert {value["name"] for value in values} == {"failure-memory"}
-    assert {value["version"] for value in values} == {"0.6.0"}
+    assert {value["version"] for value in values} == {"0.7.0"}
     assert {value["skills"] for value in values} == {"./skills/"}
     assert {value["mcpServers"] for value in values} == {"./.mcp.json"}
     assert {value["repository"] for value in values} == {
@@ -82,12 +82,14 @@ def test_readme_documents_supported_host_install_paths() -> None:
         "claude plugin marketplace add CongBao/failure-memory",
         "claude plugin install failure-memory@failure-memory",
         "copilot plugin install CongBao/failure-memory",
-        "~/.cursor/plugins/local/failure-memory",
+        "--target cursor --apply",
+        "--target copilot-vscode --apply",
+        "--target generic",
     )
     assert all(command in readme for command in expected)
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude-code", "copilot", "cursor"])
+@pytest.mark.parametrize("harness", ["codex", "claude-code", "copilot-cli", "cursor"])
 def test_session_hook_emits_bounded_guidance_without_creating_state(
     tmp_path: Path, harness: str
 ) -> None:
@@ -148,7 +150,7 @@ def test_prompt_hook_injects_failure_check_without_echoing_or_persisting_prompt(
     assert completed.returncode == 0
     assert "private correction" not in completed.stdout
     assert "requirement" in completed.stdout
-    assert "root cause" in completed.stdout
+    assert "remember_failure" in completed.stdout
     assert list(tmp_path.rglob("*")) == []
     assert json.loads(completed.stdout)["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
@@ -203,7 +205,7 @@ def test_installer_detects_stable_versions_and_duplicate_identities(
     assert installer._installed_identities("codex", "/usr/bin/codex") == (
         "failure-memory@personal",
     )
-    assert installer._installed_versions("copilot", "/usr/bin/copilot") == (
+    assert installer._installed_versions("copilot-cli", "/usr/bin/copilot") == (
         "0.4.0",
         "0.3.0",
     )
@@ -215,8 +217,10 @@ def test_installer_supports_all_published_harness_projections() -> None:
     assert installer.SUPPORTED_TARGETS == (
         "codex",
         "claude-code",
-        "copilot",
+        "copilot-cli",
+        "copilot-vscode",
         "cursor",
+        "generic",
     )
 
 
@@ -225,10 +229,10 @@ def test_installer_blocks_omitted_outdated_projection_for_shared_store(
 ) -> None:
     installer = _installer_module()
     outdated = installer.HostState(
-        target="copilot",
+        target="copilot-cli",
         executable="/usr/bin/copilot",
         installed_versions=("0.5.0",),
-        desired_version="0.6.0",
+        desired_version="0.7.0",
         installed_build_commit="old",
         desired_build_commit="new",
     )
@@ -237,7 +241,7 @@ def test_installer_blocks_omitted_outdated_projection_for_shared_store(
     with pytest.raises(RuntimeError, match="shared-store version skew"):
         installer._enforce_shared_store_version_safety(REPOSITORY, {"codex"})
 
-    installer._enforce_shared_store_version_safety(REPOSITORY, {"codex", "copilot"})
+    installer._enforce_shared_store_version_safety(REPOSITORY, {"codex", "copilot-cli"})
 
 
 def test_installer_accepts_a_codex_cachebuster_for_the_same_shared_schema() -> None:
@@ -245,8 +249,8 @@ def test_installer_accepts_a_codex_cachebuster_for_the_same_shared_schema() -> N
     current = installer.HostState(
         target="codex",
         executable="/usr/bin/codex",
-        installed_versions=("0.6.0+codex.local-20260731-120000",),
-        desired_version="0.6.0",
+        installed_versions=("0.7.0+codex.local-20260731-120000",),
+        desired_version="0.7.0",
         installed_build_commit=None,
         desired_build_commit=None,
     )
@@ -254,7 +258,7 @@ def test_installer_accepts_a_codex_cachebuster_for_the_same_shared_schema() -> N
         target="codex",
         executable="/usr/bin/codex",
         installed_versions=("0.5.0+codex.local-20260731-120000",),
-        desired_version="0.6.0",
+        desired_version="0.7.0",
         installed_build_commit=None,
         desired_build_commit=None,
     )
@@ -438,7 +442,7 @@ def test_installer_reinstalls_changed_copilot_content_at_same_version(
 ) -> None:
     installer = _installer_module()
     state = installer.HostState(
-        target="copilot",
+        target="copilot-cli",
         executable="/usr/bin/copilot",
         installed_versions=("0.4.0",),
         desired_version="0.4.0",
@@ -459,3 +463,76 @@ def test_installer_reinstalls_changed_copilot_content_at_same_version(
         ("/usr/bin/copilot", "plugin", "uninstall", "failure-memory"),
         ("/usr/bin/copilot", "plugin", "install", str(tmp_path)),
     ]
+
+
+def test_installer_projects_vscode_mcp_and_skills_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    mcp_config = tmp_path / "Code" / "User" / "mcp.json"
+    mcp_config.parent.mkdir(parents=True)
+    mcp_config.write_text(
+        json.dumps({"servers": {"existing": {"command": "existing"}}}),
+        encoding="utf-8",
+    )
+    skills = tmp_path / ".copilot" / "skills"
+    monkeypatch.setattr(installer, "_vscode_user_mcp_config", lambda: mcp_config)
+    monkeypatch.setattr(installer, "_vscode_skills_root", lambda: skills)
+
+    before = installer._state(REPOSITORY, "copilot-vscode")
+    assert before.action == "install"
+    installer._apply(REPOSITORY, before)
+
+    after = installer._state(REPOSITORY, "copilot-vscode")
+    assert after.action == "noop"
+    assert after.installed_versions == ("0.7.0",)
+    document = json.loads(mcp_config.read_text(encoding="utf-8"))
+    assert set(document["servers"]) == {"existing", "failure-memory"}
+    server = document["servers"]["failure-memory"]
+    assert server["type"] == "stdio"
+    assert server["env"]["FAILURE_MEMORY_HARNESS"] == "copilot-vscode"
+    assert server["env"]["FAILURE_MEMORY_MANAGED"] == "1"
+    assert (skills / "record-agent-failure").resolve() == (
+        REPOSITORY / "skills" / "record-agent-failure"
+    ).resolve()
+    assert (skills / "recall-failure-lessons").resolve() == (
+        REPOSITORY / "skills" / "recall-failure-lessons"
+    ).resolve()
+
+
+def test_generic_projection_uses_one_marker_and_detects_skill_conflicts(
+    tmp_path: Path,
+) -> None:
+    installer = _installer_module()
+    skills = tmp_path / ".other-agent" / "skills"
+
+    before = installer._state(
+        REPOSITORY,
+        "generic",
+        skills_dir=skills,
+        agent_name="other-agent",
+    )
+    installer._apply(REPOSITORY, before)
+    after = installer._state(
+        REPOSITORY,
+        "generic",
+        skills_dir=skills,
+        agent_name="other-agent",
+    )
+
+    assert after.action == "noop"
+    marker = json.loads((skills / ".failure-memory-install.json").read_text())
+    assert marker["version"] == "0.7.0"
+    assert marker["source_harness"] == "other-agent"
+
+    conflicting_skills = tmp_path / "conflicting" / "skills"
+    (conflicting_skills / "record-agent-failure").mkdir(parents=True)
+    conflict = installer._state(
+        REPOSITORY,
+        "generic",
+        skills_dir=conflicting_skills,
+        agent_name="other-agent",
+    )
+    assert conflict.action == "conflict"
+    assert conflict.managed_projection is False

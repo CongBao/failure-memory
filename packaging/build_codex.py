@@ -48,8 +48,11 @@ ALLOWED_ROOT_DIRECTORIES = frozenset(
 INTENDED_EXECUTABLES = frozenset(
     {
         "scripts/failure_memory_hook.py",
+        "scripts/failure_memory_cli.py",
         "scripts/failure_memory_mcp.py",
         "scripts/install_harness.py",
+        "skills/recall-failure-lessons/scripts/failure_memory_cli.py",
+        "skills/record-agent-failure/scripts/failure_memory_cli.py",
     }
 )
 REQUIRED_FILES = frozenset(
@@ -62,6 +65,7 @@ REQUIRED_FILES = frozenset(
         "LICENSE",
         "README.md",
         "hooks/hooks.json",
+        "scripts/failure_memory_cli.py",
         "scripts/failure_memory_mcp.py",
     }
 )

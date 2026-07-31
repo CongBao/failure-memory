@@ -6,7 +6,7 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 
 from failure_memory.domain.capture import Classification, ExpectationSource
-from failure_memory.mcp.tools import TOOLS
+from failure_memory.mcp.tools import PUBLIC_TOOLS, TOOLS
 
 
 def _tool(name: str) -> dict[str, object]:
@@ -16,6 +16,7 @@ def _tool(name: str) -> dict[str, object]:
 def test_tools_publish_the_public_operations() -> None:
     """Would fail if a public operation were renamed, omitted, or added."""
     expected = (
+        "remember_failure",
         "evaluate_failure_candidate",
         "diagnose_failure_cause",
         "review_failure_recording",
@@ -39,9 +40,13 @@ def test_tools_publish_the_public_operations() -> None:
         "failure_memory_doctor",
     )
 
-    assert len(TOOLS) == 21
+    assert len(TOOLS) == 22
     assert tuple(tool.name for tool in TOOLS) == expected
     assert {tool.name for tool in TOOLS} == set(expected)
+    assert tuple(tool.name for tool in PUBLIC_TOOLS) == (
+        "remember_failure",
+        "recall_failure_lessons",
+    )
 
 
 def test_tool_definitions_cannot_be_mutated_through_nested_schema_data() -> None:
@@ -61,12 +66,13 @@ def test_mcp_dictionary_is_a_fresh_json_serializable_copy() -> None:
     first["inputSchema"]["properties"]["summary"]["minLength"] = 99
 
     assert second["inputSchema"]["properties"]["summary"]["minLength"] == 1
-    assert json.loads(json.dumps(second))["name"] == "evaluate_failure_candidate"
+    assert json.loads(json.dumps(second))["name"] == "remember_failure"
 
 
 def test_all_tools_publish_object_schemas_and_safe_annotations() -> None:
     """Would fail if clients could not discover a complete, non-destructive tool contract."""
     writes = {
+        "remember_failure",
         "evaluate_failure_candidate",
         "diagnose_failure_cause",
         "review_failure_recording",
@@ -103,6 +109,46 @@ def test_output_schemas_accept_exactly_closed_success_or_error_payloads() -> Non
             {"error": {"code": "internal_error", "message": "safe message"}, "extra": True},
             schema,
         )
+
+
+def test_remember_schema_keeps_the_common_path_compact() -> None:
+    schema = _tool("remember_failure")["inputSchema"]
+    valid = {
+        "summary": "The agent bypassed the public tool.",
+        "classification": "real_failure",
+        "expectation": {
+            "invariant": "Use the public operation.",
+            "source": "repository_contract",
+            "evidence": "The loaded skill named the operation.",
+        },
+        "observed": {
+            "outcome": "The agent inspected private implementation details.",
+            "impact": "The workflow consumed unnecessary time and context.",
+        },
+        "cause": {
+            "layer": "tool_contract",
+            "failure_mode": "not_loaded",
+            "component": "failure-memory MCP",
+            "evidence": "The harness did not expose the tool.",
+            "recommended_change": "Provide one stable fallback.",
+            "verification": "Replay in a generic shell harness.",
+        },
+        "lesson": {
+            "rule": "Use one public operation.",
+            "prevention": "Use the bundled fallback when MCP is unavailable.",
+            "verification": "Observe one call and no source inspection.",
+        },
+    }
+
+    _assert_schema_valid(valid, schema)
+    _assert_schema_valid(
+        {
+            "summary": "The user added a new requirement.",
+            "classification": "requirement_update",
+        },
+        schema,
+    )
+    _assert_schema_invalid({**valid, "unknown": True}, schema)
 
 
 def test_schema_validator_enforces_format_length_bounds_and_one_of() -> None:
@@ -162,7 +208,7 @@ def test_recall_schema_requires_exact_fields_or_context_plus_discriminator() -> 
         schema,
     )
     _assert_schema_invalid({"text": "Find something similar."}, schema)
-    _assert_schema_invalid({"text": "Task", "component": "migration", "top_k": 6}, schema)
+    _assert_schema_invalid({"text": "Task", "component": "migration", "top_k": 4}, schema)
 
 
 def test_evaluate_schema_requires_complete_candidate_and_domain_enums() -> None:

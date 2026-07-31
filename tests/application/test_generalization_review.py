@@ -78,7 +78,7 @@ def test_required_review_creates_then_exactly_reuses_one_global_lesson(
     copilot = create_local_service(
         data_root=root,
         cwd=tmp_path / "other-workspace",
-        harness="copilot",
+        harness="copilot-cli",
         session_id="copilot-session",
     )
     second_capture = copilot.evaluate_failure_candidate(_candidate("Copilot skipped preflight"))

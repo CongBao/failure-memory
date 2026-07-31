@@ -1,7 +1,7 @@
 {
   "name": "failure-memory",
-  "version": "0.6.0",
-  "description": "Qualify real agent failures, diagnose root causes, preserve durable lessons locally, and recall recurrence-prevention guidance.",
+  "version": "0.7.0",
+  "description": "Remember real agent failures in one fast call and recall durable local lessons across harnesses.",
   "author": {
     "name": "CongBao",
     "url": "https://github.com/CongBao"

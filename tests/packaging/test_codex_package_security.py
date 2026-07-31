@@ -1935,9 +1935,12 @@ def test_clean_build_ignores_unsafe_live_chmod_and_normalizes_bundle_modes(
     for path in output.rglob("*"):
         expected = 0o755 if path.is_dir() else 0o644
         if path.relative_to(output).as_posix() in {
+            "scripts/failure_memory_cli.py",
             "scripts/failure_memory_hook.py",
             "scripts/failure_memory_mcp.py",
             "scripts/install_harness.py",
+            "skills/recall-failure-lessons/scripts/failure_memory_cli.py",
+            "skills/record-agent-failure/scripts/failure_memory_cli.py",
         }:
             expected = 0o755
         assert stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) == expected

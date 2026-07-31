@@ -15,6 +15,7 @@ from failure_memory.domain.causal import (
     CausalAssessmentRecord,
     RepairOutcome,
 )
+from failure_memory.domain.fast_capture import RecordingTrace
 from failure_memory.domain.learning import (
     ClusterRunResult,
     GeneralizationProposalDecision,
@@ -54,6 +55,16 @@ class EventStorePort(Protocol):
         created_at: datetime,
         redaction_state: str,
     ) -> str: ...
+
+    def append_recording_trace(
+        self,
+        trace: RecordingTrace,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+    ) -> None: ...
+
+    def recording_metrics(self) -> Mapping[str, object]: ...
 
     def get_capture_decision(self, capture_attempt_id: str) -> CaptureDecision: ...
 

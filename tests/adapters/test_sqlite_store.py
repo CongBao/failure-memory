@@ -620,9 +620,11 @@ def test_raw_rows_preserve_capture_context_and_record_payloads(
         "expectation_source": "accepted_design",
         "expectation_established_at": "2026-07-29T11:59:00+00:00",
         "observed_outcome_at": "2026-07-29T12:00:00+00:00",
-        "failure_portion_summary": None,
-        "policy_version": "tier1-v1",
-    }
+            "failure_portion_summary": None,
+            "policy_version": "tier1-v1",
+            "expectation_preexisted": None,
+            "expectation_evidence": None,
+        }
     assert dict(stored_incident) == {
         "id": result.incident_id,
         "schema_version": 1,

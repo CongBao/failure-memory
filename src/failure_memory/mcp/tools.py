@@ -19,6 +19,7 @@ from failure_memory.domain.causal import (
     FailureMode,
     RepairOutcomeKind,
 )
+from failure_memory.domain.fast_capture import DeduplicationStatus, RememberStatus
 from failure_memory.domain.learning import GeneralizationProposalDecision
 from failure_memory.domain.records import (
     IncidentLessonRelation,
@@ -128,6 +129,9 @@ def _error_payload_schema() -> dict[str, object]:
                 {
                     "code": {"type": "string"},
                     "message": {"type": "string"},
+                    "field": {"type": "string"},
+                    "expected": {"type": "string"},
+                    "trace_id": {"type": "string"},
                 },
                 ["code", "message"],
             )
@@ -455,7 +459,7 @@ def _recall_input_schema() -> Schema:
             "cause_layer": _CAUSE_LAYER,
             "failure_mode": _FAILURE_MODE,
             "repair_target_layer": _CAUSE_LAYER,
-            "top_k": {"type": "integer", "minimum": 1, "maximum": 5},
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 3},
         },
         [],
     )
@@ -592,14 +596,20 @@ class ToolDefinition:
         object.__setattr__(self, "output_schema", cast(Schema, _freeze(self.output_schema)))
         object.__setattr__(self, "annotations", cast(Schema, _freeze(self.annotations)))
 
-    def as_mcp_dict(self) -> dict[str, object]:
-        return {
+    def as_mcp_dict(
+        self,
+        *,
+        include_output_schema: bool = True,
+    ) -> dict[str, object]:
+        value: dict[str, object] = {
             "name": self.name,
             "description": self.description,
             "inputSchema": _thaw(self.input_schema),
-            "outputSchema": _thaw(self.output_schema),
             "annotations": _thaw(self.annotations),
         }
+        if include_output_schema:
+            value["outputSchema"] = _thaw(self.output_schema)
+        return value
 
 
 def _annotations(*, read_only: bool, idempotent: bool | None = None) -> Schema:
@@ -628,6 +638,143 @@ def _thaw(value: object) -> object:
 
 
 TOOLS: Final[tuple[ToolDefinition, ...]] = (
+    ToolDefinition(
+        name="remember_failure",
+        description=(
+            "Qualify and, only when warranted, record one failure with its root cause, "
+            "repair, deduplication review, and proposed lesson in a single call."
+        ),
+        input_schema=_object_schema(
+            {
+                "summary": _DRAFT_STRING,
+                "classification": {
+                    "type": "string",
+                    "enum": [member.value for member in Classification],
+                },
+                "failure_portion": _DRAFT_STRING,
+                "expectation": _object_schema(
+                    {
+                        "invariant": _DRAFT_STRING,
+                        "source": {
+                            "type": "string",
+                            "enum": [member.value for member in ExpectationSource],
+                        },
+                        "evidence": _DRAFT_STRING,
+                    },
+                    ["invariant", "source", "evidence"],
+                ),
+                "observed": _object_schema(
+                    {
+                        "outcome": _DRAFT_STRING,
+                        "impact": _DRAFT_STRING,
+                        "recurrence_risk": _DRAFT_STRING,
+                    },
+                    ["outcome", "impact"],
+                ),
+                "cause": _object_schema(
+                    {
+                        "layer": _CAUSE_LAYER,
+                        "failure_mode": _FAILURE_MODE,
+                        "component": _DRAFT_STRING,
+                        "evidence": _DRAFT_STRING,
+                        "recommended_change": _DRAFT_STRING,
+                        "verification": _DRAFT_STRING,
+                        "confidence": _CAUSAL_CONFIDENCE,
+                    },
+                    [
+                        "layer",
+                        "failure_mode",
+                        "component",
+                        "evidence",
+                        "recommended_change",
+                        "verification",
+                    ],
+                ),
+                "lesson": _object_schema(
+                    {
+                        "rule": _DRAFT_STRING,
+                        "prevention": _DRAFT_STRING,
+                        "verification": _DRAFT_STRING,
+                        "title": _DRAFT_STRING,
+                        "applicability": _DRAFT_STRING,
+                        "counterexamples": _DRAFT_STRING,
+                    },
+                    ["rule", "prevention", "verification"],
+                ),
+            },
+            ["summary", "classification"],
+        ),
+        output_schema=_tool_output_schema(
+            _object_schema(
+                {
+                    "operation_id": _DRAFT_STRING,
+                    "status": {
+                        "type": "string",
+                        "enum": [member.value for member in RememberStatus],
+                    },
+                    "capture_attempt_id": _DRAFT_STRING,
+                    "decision": {
+                        "type": "string",
+                        "enum": [member.value for member in CaptureDecision],
+                    },
+                    "reason_codes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [member.value for member in ReasonCode],
+                        },
+                    },
+                    "deduplication_status": {
+                        "type": "string",
+                        "enum": [member.value for member in DeduplicationStatus],
+                    },
+                    "semantic_status": _DRAFT_STRING,
+                    "total_latency_ms": {"type": "integer", "minimum": 0},
+                    "incident_id": {"oneOf": [{"type": "null"}, _DRAFT_STRING]},
+                    "lesson_id": {"oneOf": [{"type": "null"}, _DRAFT_STRING]},
+                    "lesson_version_id": {"oneOf": [{"type": "null"}, _DRAFT_STRING]},
+                    "relation": {
+                        "oneOf": [
+                            {"type": "null"},
+                            {
+                                "type": "string",
+                                "enum": [
+                                    member.value for member in IncidentLessonRelation
+                                ],
+                            },
+                        ]
+                    },
+                    "causal_assessment_id": {
+                        "oneOf": [{"type": "null"}, _DRAFT_STRING]
+                    },
+                    "repair_recommendation_id": {
+                        "oneOf": [{"type": "null"}, _DRAFT_STRING]
+                    },
+                    "generalization_review_id": {
+                        "oneOf": [{"type": "null"}, _DRAFT_STRING]
+                    },
+                },
+                [
+                    "operation_id",
+                    "status",
+                    "capture_attempt_id",
+                    "decision",
+                    "reason_codes",
+                    "deduplication_status",
+                    "semantic_status",
+                    "total_latency_ms",
+                    "incident_id",
+                    "lesson_id",
+                    "lesson_version_id",
+                    "relation",
+                    "causal_assessment_id",
+                    "repair_recommendation_id",
+                    "generalization_review_id",
+                ],
+            )
+        ),
+        annotations=_annotations(read_only=False, idempotent=False),
+    ),
     ToolDefinition(
         name="evaluate_failure_candidate",
         description="Qualify a candidate as an accepted, rejected, or deferred failure capture.",
@@ -895,7 +1042,7 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
     ToolDefinition(
         name="recall_failure_lessons",
         description=(
-            "Recall up to five lessons from global personal memory using exact, lexical, "
+            "Recall up to three lessons from global personal memory using exact, lexical, "
             "semantic, or hybrid retrieval and append a privacy-preserving trace."
         ),
         input_schema=_recall_input_schema(),
@@ -920,7 +1067,7 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
                     "candidates": {
                         "type": "array",
                         "items": _recall_candidate_schema(),
-                        "maxItems": 5,
+                        "maxItems": 3,
                     },
                 },
                 [
@@ -1295,4 +1442,10 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
         ),
         annotations=_annotations(read_only=True),
     ),
+)
+
+PUBLIC_TOOLS: Final[tuple[ToolDefinition, ...]] = tuple(
+    tool
+    for tool in TOOLS
+    if tool.name in {"remember_failure", "recall_failure_lessons"}
 )

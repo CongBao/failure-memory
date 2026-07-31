@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC
 
 from failure_memory.domain.capture import (
     CaptureAssessment,
@@ -19,9 +19,14 @@ _UPDATE_CLASSES = {
 
 
 def _expectation_precedes_outcome(
-    expectation_established_at: datetime | None,
-    observed_outcome_at: datetime,
+    candidate: FailureCandidate,
 ) -> bool:
+    if candidate.expectation_preexisted is not None:
+        return candidate.expectation_preexisted and bool(
+            (candidate.expectation_evidence or "").strip()
+        )
+    expectation_established_at = candidate.expectation_established_at
+    observed_outcome_at = candidate.observed_outcome_at
     if expectation_established_at is None:
         return False
     if expectation_established_at.utcoffset() is None:
@@ -59,10 +64,7 @@ def evaluate_candidate(candidate: FailureCandidate) -> CaptureAssessment:
     reasons: list[ReasonCode] = []
     if candidate.expectation_source is ExpectationSource.NONE:
         reasons.append(ReasonCode.EXPECTATION_SOURCE_MISSING)
-    if not _expectation_precedes_outcome(
-        candidate.expectation_established_at,
-        candidate.observed_outcome_at,
-    ):
+    if not _expectation_precedes_outcome(candidate):
         reasons.append(ReasonCode.EXPECTATION_NOT_ESTABLISHED_BEFORE_OUTCOME)
     if not candidate.outcome_mismatch:
         reasons.append(ReasonCode.NO_INSPECTABLE_MISMATCH)

@@ -14,7 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PLUGIN_NAME = "failure-memory"
-SUPPORTED_TARGETS = ("codex", "claude-code", "copilot", "cursor")
+SUPPORTED_TARGETS = (
+    "codex",
+    "claude-code",
+    "copilot-cli",
+    "copilot-vscode",
+    "cursor",
+    "generic",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +35,9 @@ class HostState:
     marketplace_present: bool = False
     managed_projection: bool = True
     installed_identities: tuple[str, ...] = ()
+    skills_dir: str | None = None
+    mcp_config: str | None = None
+    agent_name: str | None = None
 
     @property
     def installed_matches_desired(self) -> bool:
@@ -53,7 +63,7 @@ class HostState:
         if not self.installed_matches_desired:
             return "install" if not self.installed_versions else "update"
         if (
-            self.target in {"copilot", "cursor"}
+            self.target in {"copilot-cli", "copilot-vscode", "cursor", "generic"}
             and self.installed_build_commit is not None
             and self.desired_build_commit is not None
             and self.installed_build_commit != self.desired_build_commit
@@ -66,7 +76,7 @@ class HostState:
     @property
     def same_version_content_update(self) -> bool:
         return (
-            self.target in {"copilot", "cursor"}
+            self.target in {"copilot-cli", "copilot-vscode", "cursor", "generic"}
             and self.installed_versions == (self.desired_version,)
             and self.installed_build_commit is not None
             and self.desired_build_commit is not None
@@ -89,6 +99,21 @@ def _parser() -> argparse.ArgumentParser:
         help="host to inspect; repeat for multiple hosts",
     )
     parser.add_argument(
+        "--skills-dir",
+        type=Path,
+        help="skill root for the generic target; defaults to ~/.agents/skills",
+    )
+    parser.add_argument(
+        "--mcp-config",
+        type=Path,
+        help="optional MCP JSON file for the generic target",
+    )
+    parser.add_argument(
+        "--agent-name",
+        default="generic",
+        help="source-harness label for a generic projection",
+    )
+    parser.add_argument(
         "--bundle",
         type=Path,
         default=Path(__file__).resolve().parents[1],
@@ -106,8 +131,10 @@ def _manifest_version(bundle: Path, target: str) -> str:
     manifest_directories = {
         "codex": ".codex-plugin",
         "claude-code": ".claude-plugin",
-        "copilot": ".plugin",
+        "copilot-cli": ".plugin",
+        "copilot-vscode": ".plugin",
         "cursor": ".cursor-plugin",
+        "generic": ".codex-plugin",
     }
     location = bundle / manifest_directories[target] / "plugin.json"
     value = json.loads(location.read_text(encoding="utf-8"))
@@ -138,6 +165,223 @@ def _copilot_install_root() -> Path:
 
 def _cursor_install_root() -> Path:
     return Path.home() / ".cursor" / "plugins" / "local" / PLUGIN_NAME
+
+
+def _vscode_user_mcp_config() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        return base / "Code" / "User" / "mcp.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Code" / "User" / "mcp.json"
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "Code" / "User" / "mcp.json"
+
+
+def _vscode_skills_root() -> Path:
+    return Path.home() / ".copilot" / "skills"
+
+
+def _generic_marker(skills_dir: Path) -> Path:
+    return skills_dir / ".failure-memory-install.json"
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read JSON configuration at {path}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"JSON configuration at {path} must contain an object")
+    return value
+
+
+def _projection_skills_match(bundle: Path, skills_dir: Path) -> bool:
+    for name in ("record-agent-failure", "recall-failure-lessons"):
+        destination = skills_dir / name
+        if not destination.is_symlink():
+            return False
+        try:
+            if destination.resolve(strict=True) != (bundle / "skills" / name).resolve(strict=True):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _projection_skills_conflict(bundle: Path, skills_dir: Path) -> bool:
+    for name in ("record-agent-failure", "recall-failure-lessons"):
+        destination = skills_dir / name
+        if not (destination.exists() or destination.is_symlink()):
+            continue
+        if not destination.is_symlink():
+            return True
+        try:
+            if destination.resolve(strict=True) != (bundle / "skills" / name).resolve(strict=True):
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _projection_state(
+    bundle: Path,
+    target: str,
+    *,
+    skills_dir: Path,
+    mcp_config: Path | None,
+    agent_name: str,
+) -> HostState:
+    desired_version = _manifest_version(bundle, target)
+    managed = True
+    installed_version: str | None = None
+    installed_commit: str | None = None
+    identity_present = False
+    if mcp_config is not None:
+        document = _read_json_object(mcp_config)
+        servers = document.get("servers")
+        if not isinstance(servers, dict):
+            servers = document.get("mcpServers")
+        entry = None if not isinstance(servers, dict) else servers.get(PLUGIN_NAME)
+        if entry is not None:
+            identity_present = True
+            if not isinstance(entry, dict):
+                managed = False
+            else:
+                environment = entry.get("env")
+                if not isinstance(environment, dict) or environment.get(
+                    "FAILURE_MEMORY_MANAGED"
+                ) != "1":
+                    managed = False
+                else:
+                    version = environment.get("FAILURE_MEMORY_PLUGIN_VERSION")
+                    commit = environment.get("FAILURE_MEMORY_BUILD_COMMIT")
+                    installed_version = version if isinstance(version, str) else None
+                    installed_commit = commit if isinstance(commit, str) and commit else None
+    else:
+        marker = _read_json_object(_generic_marker(skills_dir))
+        if marker:
+            identity_present = True
+            if marker.get("plugin") != PLUGIN_NAME or marker.get("managed") is not True:
+                managed = False
+            else:
+                version = marker.get("version")
+                commit = marker.get("build_commit")
+                installed_version = version if isinstance(version, str) else None
+                installed_commit = commit if isinstance(commit, str) and commit else None
+    if _projection_skills_conflict(bundle, skills_dir):
+        identity_present = True
+        managed = False
+    skills_match = _projection_skills_match(bundle, skills_dir)
+    complete = identity_present and managed and installed_version is not None and skills_match
+    versions = (installed_version,) if complete and installed_version is not None else ()
+    if identity_present and not managed:
+        versions = ("unmanaged",)
+    return HostState(
+        target=target,
+        executable="",
+        installed_versions=versions,
+        desired_version=desired_version,
+        installed_build_commit=installed_commit,
+        desired_build_commit=_build_commit(bundle),
+        managed_projection=managed,
+        installed_identities=((PLUGIN_NAME,) if identity_present else ()),
+        skills_dir=str(skills_dir),
+        mcp_config=None if mcp_config is None else str(mcp_config),
+        agent_name=agent_name,
+    )
+
+
+def _atomic_json_write(path: Path, document: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.new"
+    if temporary.exists() or temporary.is_symlink():
+        raise RuntimeError(f"stale temporary configuration exists at {temporary}")
+    try:
+        temporary.write_text(
+            json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _project_skill_links(bundle: Path, skills_dir: Path) -> None:
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("record-agent-failure", "recall-failure-lessons"):
+        source = (bundle / "skills" / name).resolve(strict=True)
+        destination = skills_dir / name
+        if destination.is_symlink() and destination.resolve(strict=False) == source:
+            continue
+        if destination.exists() or destination.is_symlink():
+            raise RuntimeError(f"unmanaged skill projection exists at {destination}")
+        temporary = skills_dir / f".{name}.{os.getpid()}.new"
+        if temporary.exists() or temporary.is_symlink():
+            raise RuntimeError(f"stale skill projection exists at {temporary}")
+        temporary.symlink_to(source, target_is_directory=True)
+        try:
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _apply_projection(bundle: Path, state: HostState) -> None:
+    assert state.skills_dir is not None
+    assert state.agent_name is not None
+    skills_dir = Path(state.skills_dir)
+    _project_skill_links(bundle, skills_dir)
+    version = state.desired_version
+    commit = state.desired_build_commit or ""
+    if state.mcp_config is None:
+        _atomic_json_write(
+            _generic_marker(skills_dir),
+            {
+                "plugin": PLUGIN_NAME,
+                "version": version,
+                "build_commit": commit,
+                "managed": True,
+                "source_harness": state.agent_name,
+            },
+        )
+        return
+    mcp_config = Path(state.mcp_config)
+    document = _read_json_object(mcp_config)
+    key = "servers" if "mcpServers" not in document else "mcpServers"
+    servers = document.get(key)
+    if servers is None:
+        servers = {}
+        document[key] = servers
+    if not isinstance(servers, dict):
+        raise RuntimeError(f"{mcp_config} {key} value must be an object")
+    existing = servers.get(PLUGIN_NAME)
+    if existing is not None:
+        if not isinstance(existing, dict):
+            raise RuntimeError("existing failure-memory MCP entry is unmanaged")
+        environment = existing.get("env")
+        if not isinstance(environment, dict) or environment.get(
+            "FAILURE_MEMORY_MANAGED"
+        ) != "1":
+            raise RuntimeError("existing failure-memory MCP entry is unmanaged")
+    entry: dict[str, object] = {
+        "command": "python3",
+        "args": [str((bundle / "scripts" / "failure_memory_mcp.py").resolve(strict=True))],
+        "cwd": str(bundle),
+        "env": {
+            "FAILURE_MEMORY_HARNESS": state.agent_name,
+            "FAILURE_MEMORY_MANAGED": "1",
+            "FAILURE_MEMORY_PLUGIN_VERSION": version,
+            "FAILURE_MEMORY_BUILD_COMMIT": commit,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    }
+    if key == "servers":
+        entry["type"] = "stdio"
+    servers[PLUGIN_NAME] = entry
+    _atomic_json_write(mcp_config, document)
 
 
 def _run(executable: str, *arguments: str, check: bool = True) -> str:
@@ -177,7 +421,7 @@ def _installed_plugins(target: str, executable: str) -> tuple[tuple[str, str], .
             if isinstance(identity, str) and isinstance(version, str):
                 plugins.append((identity, version))
         return tuple(plugins)
-    if target == "copilot":
+    if target == "copilot-cli":
         matches = re.findall(
             rf"^\s*[•*]?\s*({re.escape(PLUGIN_NAME)}(?:@\S+)?)\s+\(v([^)]+)\)",
             output,
@@ -271,13 +515,36 @@ def _cursor_state(bundle: Path) -> HostState:
     )
 
 
-def _state(bundle: Path, target: str) -> HostState:
+def _state(
+    bundle: Path,
+    target: str,
+    *,
+    skills_dir: Path | None = None,
+    mcp_config: Path | None = None,
+    agent_name: str = "generic",
+) -> HostState:
     if target == "cursor":
         return _cursor_state(bundle)
+    if target == "copilot-vscode":
+        return _projection_state(
+            bundle,
+            target,
+            skills_dir=_vscode_skills_root(),
+            mcp_config=_vscode_user_mcp_config(),
+            agent_name="copilot-vscode",
+        )
+    if target == "generic":
+        return _projection_state(
+            bundle,
+            target,
+            skills_dir=skills_dir or Path.home() / ".agents" / "skills",
+            mcp_config=mcp_config,
+            agent_name=agent_name,
+        )
     executable_name = {
         "codex": "codex",
         "claude-code": "claude",
-        "copilot": "copilot",
+        "copilot-cli": "copilot",
     }[target]
     executable = shutil.which(executable_name)
     if executable is None:
@@ -289,7 +556,7 @@ def _state(bundle: Path, target: str) -> HostState:
         installed_versions=tuple(version for _identity, version in installed_plugins),
         desired_version=_manifest_version(bundle, target),
         installed_build_commit=(
-            _build_commit(_copilot_install_root()) if target == "copilot" else None
+            _build_commit(_copilot_install_root()) if target == "copilot-cli" else None
         ),
         desired_build_commit=_build_commit(bundle),
         marketplace_present=(
@@ -306,13 +573,16 @@ def _installed_states(bundle: Path) -> tuple[HostState, ...]:
     for target, executable_name in (
         ("codex", "codex"),
         ("claude-code", "claude"),
-        ("copilot", "copilot"),
+        ("copilot-cli", "copilot"),
     ):
         if shutil.which(executable_name) is not None:
             states.append(_state(bundle, target))
     cursor_root = _cursor_install_root()
     if cursor_root.exists() or cursor_root.is_symlink():
         states.append(_cursor_state(bundle))
+    vscode = _state(bundle, "copilot-vscode")
+    if vscode.installed_identities:
+        states.append(vscode)
     return tuple(states)
 
 
@@ -361,6 +631,9 @@ def _apply(bundle: Path, state: HostState) -> None:
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
+        return
+    if state.target in {"copilot-vscode", "generic"}:
+        _apply_projection(bundle, state)
         return
     if state.target == "claude-code":
         identity = (
@@ -462,12 +735,24 @@ def main() -> int:
     bundle = arguments.bundle.expanduser().resolve(strict=True)
     targets = tuple(dict.fromkeys(arguments.target))
     _desired_version(bundle)
-    states = [_state(bundle, target) for target in targets]
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", arguments.agent_name):
+        raise RuntimeError("--agent-name must be a lowercase portable identifier")
+
+    def inspect(target: str) -> HostState:
+        return _state(
+            bundle,
+            target,
+            skills_dir=arguments.skills_dir,
+            mcp_config=arguments.mcp_config,
+            agent_name=arguments.agent_name,
+        )
+
+    states = [inspect(target) for target in targets]
     if arguments.apply:
         _enforce_shared_store_version_safety(bundle, set(targets))
         for state in states:
             _apply(bundle, state)
-        states = [_state(bundle, state.target) for state in states]
+        states = [inspect(state.target) for state in states]
     payload = {
         "plugin": PLUGIN_NAME,
         "bundle": str(bundle),

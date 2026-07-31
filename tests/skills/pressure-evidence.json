@@ -1,57 +1,34 @@
 {
-  "evidence_version": 1,
+  "evidence_version": 2,
   "algorithm": "sha256",
-  "behavior_digest_definition": "sha256 of exact SKILL.md bytes after removing exactly one generated metadata note block and its following separator",
-  "renderer_digest_definition": "sha256 of exact tools/render_skills.py bytes",
+  "reviewed_version": "0.7.0",
+  "reviewed_on": "2026-07-31",
   "pressure": {
     "scenarios_path": "tests/skills/pressure-scenarios.md",
-    "scenarios_sha256": "6a398dc36020aba03aff97211bfb1436c894339bb5f9371617b0fbc23014a95b",
+    "scenarios_sha256": "22fb63d51913d7d2a066b60a00106d8d228dcc20ff62c2ddcc957dff04775e70",
     "results_path": "tests/skills/pressure-results.md",
-    "results_sha256": "43bc0ea36973af3bdadc2198c8773427d028ba6648a3de62331d8c22c960130e"
+    "results_sha256": "8bd127a07d0a7767c8acd48178415a57bfba9eebffee8ba8f3101d3fb33fcc82"
   },
   "skills": {
     "record-agent-failure": {
-      "policy_sha256": "fe32e8bf557474681daebee1a9d2ee180f31bc37447f24713f9024620df67e94",
-      "behavior_sha256": "693a17816736906daa035691e5122bf80164c01ea3371a83f5b47485e96cc850",
-      "renderer_sha256": "ee5e51546267ac2c257983eea23b4e4ad685f8b6212ae21b4ed0f6b00ade4410",
-      "pressure_families": [
-        "R1",
-        "R2",
-        "R3",
-        "R4"
-      ],
+      "contract_sha256": "f7b30e80e5e0b76f2262fdcb3eb1582ad8a65bd4c93bd2d7f5ae27df5a31c4df",
+      "skill_sha256": "ab1c66aea0eb76b2a8402336500963fcee0b3d461653f536ade7a2cfbed68e78",
+      "renderer_sha256": "1baf863c8ab8bf550e3edac316fc34a9e02cfd4597865f3f47a2292a9270136b",
       "final_qualifying": {
-        "passed": 4,
-        "total": 4
+        "passed": 5,
+        "total": 5
       },
-      "adjudication": {
-        "kind": "pressure_rerun",
-        "basis": "fresh_forward_test",
-        "reviewed_against_commit": "0.6.0-causal-forward-test-2026-07-31",
-        "pressure_rerun": true
-      },
-      "binding_sha256": "151807a9f7c8f7c03139afe81e7f306e78d845172dd9fe7f3f30b370298b5825"
+      "fresh_forward_test": true
     },
     "recall-failure-lessons": {
-      "policy_sha256": "5f80d5f51a83bab13f2a447cd5a9521d82e9bbcf643fe1578a19e2441dfc4f36",
-      "behavior_sha256": "0e4559348e76c7f7903233538306cc1aa618ce9b48d5c6cc07d9b9aeba67cec4",
-      "renderer_sha256": "ee5e51546267ac2c257983eea23b4e4ad685f8b6212ae21b4ed0f6b00ade4410",
-      "pressure_families": [
-        "C1",
-        "C2",
-        "C3"
-      ],
+      "contract_sha256": "7bc700860ae5df93bb18fb1f7bae06ee15acec835df944b20af955703ee31818",
+      "skill_sha256": "bea5a843c628646d9aab114dda05fc88ad1cef8affa33d2e05c1cd3cc48249e0",
+      "renderer_sha256": "1baf863c8ab8bf550e3edac316fc34a9e02cfd4597865f3f47a2292a9270136b",
       "final_qualifying": {
         "passed": 3,
         "total": 3
       },
-      "adjudication": {
-        "kind": "unchanged_semantics",
-        "basis": "exact_behavior_bytes_unchanged",
-        "reviewed_against_commit": "11593770aa0f37cec8efbce21cab3df7821f7ff9",
-        "pressure_rerun": false
-      },
-      "binding_sha256": "edf686a4b6c22d9cdadd831cdcee181b695c8716d351aa59347533b2db6553d7"
+      "fresh_forward_test": true
     }
   }
 }

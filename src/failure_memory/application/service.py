@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -30,14 +31,32 @@ from failure_memory.adapters.retrieval.sqlite import SQLiteRetrievalIndex
 from failure_memory.adapters.storage_permissions import ensure_private_tree
 from failure_memory.application.errors import SemanticSetupRequiredError, StorageBusyError
 from failure_memory.application.redaction import RedactionResult, redact_text
-from failure_memory.domain.capture import CaptureAssessment, FailureCandidate
+from failure_memory.domain.capture import (
+    CaptureAssessment,
+    CaptureDecision,
+    ExpectationSource,
+    FailureCandidate,
+)
 from failure_memory.domain.causal import (
     CausalAssessmentDraft,
     CausalAssessmentRecord,
+    CausalAssessmentState,
+    CausalConfidence,
     CausalFactorDraft,
+    CausalFactorRole,
+    CauseLayer,
+    FailureMode,
     RepairOutcome,
     RepairRecommendationDraft,
 )
+from failure_memory.domain.fast_capture import (
+    DeduplicationStatus,
+    RecordingTrace,
+    RememberFailureDraft,
+    RememberFailureResult,
+    RememberStatus,
+)
+from failure_memory.domain.ids import new_id
 from failure_memory.domain.learning import (
     GeneralizationProposalDecision,
     GeneralizationRecommendation,
@@ -132,6 +151,7 @@ class FailureMemoryService:
         target_lesson_version_id: str | None = None,
         rationale_code: str | None = None,
         causal_assessment_id: str | None = None,
+        synchronize_index: bool = True,
     ) -> RecordResult:
         safe_incident, incident_results = _redact_incident(incident)
         safe_lesson, lesson_results = _redact_lesson(lesson)
@@ -148,9 +168,244 @@ class FailureMemoryService:
             rationale_code=rationale_code,
             causal_assessment_id=causal_assessment_id,
         )
-        with suppress(Exception):
-            self.build_index()
+        if synchronize_index:
+            with suppress(Exception):
+                self.build_index()
         return result
+
+    def remember_failure(
+        self,
+        draft: RememberFailureDraft,
+        *,
+        transport: str,
+    ) -> RememberFailureResult:
+        """Run qualification, diagnosis, deduplication, and persistence behind one call."""
+        if transport not in {"mcp", "cli"}:
+            raise ValueError("unsupported recording transport")
+        started = time.monotonic()
+        operation_id = new_id("rop")
+        now = self.clock()
+        expectation = draft.expectation
+        observed = draft.observed
+        cause = draft.cause
+        lesson_evidence = draft.lesson
+        accepted_shape = all(
+            value is not None for value in (expectation, observed, cause, lesson_evidence)
+        )
+        qualification_started = time.monotonic()
+        candidate = FailureCandidate(
+            summary=draft.summary,
+            classification=draft.classification,
+            expectation_source=(
+                expectation.source if expectation is not None else ExpectationSource.NONE
+            ),
+            expectation_established_at=None,
+            observed_outcome_at=now,
+            outcome_mismatch=observed is not None and bool(observed.outcome.strip()),
+            material_impact_or_recurrence_risk=(
+                observed is not None and bool(observed.impact.strip())
+            ),
+            controllable_with_prior_information=(
+                cause is not None
+                and bool(cause.evidence.strip())
+                and bool(cause.recommended_change.strip())
+            ),
+            durable_lesson=(
+                lesson_evidence is not None
+                and bool(lesson_evidence.rule.strip())
+                and bool(lesson_evidence.prevention.strip())
+                and bool(lesson_evidence.verification.strip())
+            ),
+            failure_portion_summary=draft.failure_portion,
+            expectation_preexisted=(
+                accepted_shape
+                and expectation is not None
+                and expectation.source is not ExpectationSource.NONE
+                and bool(expectation.evidence.strip())
+            ),
+            expectation_evidence=(None if expectation is None else expectation.evidence),
+        )
+        evaluated = self.evaluate_failure_candidate(candidate)
+        qualification_latency = _elapsed_ms(qualification_started)
+        assessment = evaluated.assessment
+        if assessment.decision is not CaptureDecision.ACCEPT:
+            status = (
+                RememberStatus.DEFERRED
+                if assessment.decision.value == "defer"
+                else RememberStatus.NOT_FAILURE
+            )
+            total_latency = _elapsed_ms(started)
+            trace = RecordingTrace(
+                operation_id=operation_id,
+                transport=transport,
+                workflow_version="remember-v1",
+                status=status,
+                decision=assessment.decision,
+                deduplication_status=DeduplicationStatus.NOT_RUN,
+                semantic_status="not_run",
+                total_latency_ms=total_latency,
+                qualification_latency_ms=qualification_latency,
+                causal_latency_ms=0,
+                deduplication_latency_ms=0,
+                persistence_latency_ms=0,
+                capture_attempt_id=evaluated.capture_attempt_id,
+            )
+            self.store.append_recording_trace(trace, self.context, created_at=self.clock())
+            return RememberFailureResult(
+                operation_id=operation_id,
+                status=status,
+                capture_attempt_id=evaluated.capture_attempt_id,
+                decision=assessment.decision,
+                reason_codes=assessment.reason_codes,
+                deduplication_status=DeduplicationStatus.NOT_RUN,
+                semantic_status="not_run",
+                total_latency_ms=total_latency,
+            )
+
+        assert expectation is not None
+        assert observed is not None
+        assert cause is not None
+        assert lesson_evidence is not None
+        causal_started = time.monotonic()
+        component_reference = _portable_component_reference(cause.component, cause.layer)
+        causal_state = (
+            CausalAssessmentState.UNKNOWN
+            if cause.layer is CauseLayer.UNKNOWN
+            else CausalAssessmentState.SUPPORTED
+            if cause.confidence is CausalConfidence.HIGH
+            else CausalAssessmentState.PARTIAL
+        )
+        causal_record = self.diagnose_failure_cause(
+            evaluated.capture_attempt_id,
+            CausalAssessmentDraft(
+                state=causal_state,
+                factors=(
+                    CausalFactorDraft(
+                        role=CausalFactorRole.PRIMARY,
+                        layer=cause.layer,
+                        failure_mode=(
+                            FailureMode.UNKNOWN
+                            if causal_state is CausalAssessmentState.UNKNOWN
+                            else cause.failure_mode
+                        ),
+                        component_reference=component_reference,
+                        evidence_summary=cause.evidence,
+                        confidence=cause.confidence,
+                    ),
+                ),
+                recommendations=(
+                    RepairRecommendationDraft(
+                        target_layer=cause.layer,
+                        target_reference=component_reference,
+                        recommended_change=cause.recommended_change,
+                        verification_action=cause.verification,
+                        rationale=cause.evidence,
+                        confidence=cause.confidence,
+                    ),
+                ),
+                unknown_reason=(
+                    cause.evidence
+                    if causal_state is CausalAssessmentState.UNKNOWN
+                    else None
+                ),
+            ),
+        )
+        causal_latency = _elapsed_ms(causal_started)
+        incident = IncidentDraft(
+            outcome_summary=observed.outcome,
+            expected_invariant=expectation.invariant,
+            controllable_cause=cause.evidence,
+            material_impact=observed.impact,
+            recurrence_risk=observed.recurrence_risk or observed.impact,
+        )
+        lesson = LessonDraft(
+            title=lesson_evidence.title or _default_lesson_title(draft.summary),
+            rule=lesson_evidence.rule,
+            prevention_action=lesson_evidence.prevention,
+            verification_action=lesson_evidence.verification,
+            applicability=lesson_evidence.applicability or expectation.invariant,
+            counterexamples=(
+                lesson_evidence.counterexamples
+                or "Requirement updates, new details, and first-time preferences."
+            ),
+        )
+        deduplication_started = time.monotonic()
+        review = self.review_failure_recording(
+            evaluated.capture_attempt_id,
+            incident,
+            lesson,
+            causal_assessment_id=causal_record.id,
+            search_related=False,
+        )
+        recommendation = str(review["recommendation"])
+        candidates = cast(list[Mapping[str, object]], review["candidates"])
+        target_lesson_version_id: str | None = None
+        if recommendation == "reuse_exact":
+            disposition = RecordingDisposition.REUSE_EXISTING
+            deduplication_status = DeduplicationStatus.EXACT_REUSE
+            target_lesson_version_id = str(candidates[0]["lesson_version_id"])
+            rationale_code = "exact_signature_reuse"
+            semantic_status = "not_needed"
+        elif recommendation == "review_related":
+            disposition = RecordingDisposition.CREATE_DISTINCT
+            deduplication_status = DeduplicationStatus.RELATED_PENDING_GENERALIZATION
+            rationale_code = "related_pending_generalization"
+            semantic_status = _semantic_status(self.retrieval_status())
+        else:
+            disposition = RecordingDisposition.CREATE_DISTINCT
+            deduplication_status = DeduplicationStatus.DISTINCT
+            rationale_code = "no_related_lesson"
+            semantic_status = _semantic_status(self.retrieval_status())
+        deduplication_latency = _elapsed_ms(deduplication_started)
+        persistence_started = time.monotonic()
+        record = self.record_failure_incident(
+            evaluated.capture_attempt_id,
+            incident,
+            lesson,
+            generalization_review_id=str(review["review_id"]),
+            disposition=disposition,
+            target_lesson_version_id=target_lesson_version_id,
+            rationale_code=rationale_code,
+            causal_assessment_id=causal_record.id,
+            synchronize_index=False,
+        )
+        persistence_latency = _elapsed_ms(persistence_started)
+        total_latency = _elapsed_ms(started)
+        trace = RecordingTrace(
+            operation_id=operation_id,
+            transport=transport,
+            workflow_version="remember-v1",
+            status=RememberStatus.RECORDED,
+            decision=assessment.decision,
+            deduplication_status=deduplication_status,
+            semantic_status=semantic_status,
+            total_latency_ms=total_latency,
+            qualification_latency_ms=qualification_latency,
+            causal_latency_ms=causal_latency,
+            deduplication_latency_ms=deduplication_latency,
+            persistence_latency_ms=persistence_latency,
+            capture_attempt_id=evaluated.capture_attempt_id,
+            incident_id=record.incident_id,
+            lesson_version_id=record.lesson_version_id,
+        )
+        self.store.append_recording_trace(trace, self.context, created_at=self.clock())
+        return RememberFailureResult(
+            operation_id=operation_id,
+            status=RememberStatus.RECORDED,
+            capture_attempt_id=evaluated.capture_attempt_id,
+            decision=assessment.decision,
+            reason_codes=assessment.reason_codes,
+            deduplication_status=deduplication_status,
+            semantic_status=semantic_status,
+            total_latency_ms=total_latency,
+            incident_id=record.incident_id,
+            lesson_id=record.lesson_id,
+            lesson_version_id=record.lesson_version_id,
+            relation=record.relation,
+            causal_assessment_id=causal_record.id,
+            repair_recommendation_id=causal_record.recommendation_ids[0],
+            generalization_review_id=str(review["review_id"]),
+        )
 
     def review_failure_recording(
         self,
@@ -159,6 +414,7 @@ class FailureMemoryService:
         lesson: LessonDraft,
         *,
         causal_assessment_id: str | None = None,
+        search_related: bool = True,
     ) -> Mapping[str, object]:
         safe_incident, incident_results = _redact_incident(incident)
         safe_lesson, lesson_results = _redact_lesson(lesson)
@@ -220,6 +476,10 @@ class FailureMemoryService:
                 ),
             )
             recommendation = GeneralizationRecommendation.REUSE_EXACT
+        elif not search_related:
+            candidates = ()
+            profile_name = "exact-signature-fast-path"
+            recommendation = GeneralizationRecommendation.CREATE_DISTINCT
         elif self.retrieval_index is None:
             candidates = ()
             recommendation = GeneralizationRecommendation.CREATE_DISTINCT
@@ -510,6 +770,9 @@ class FailureMemoryService:
     def recall_metrics(self) -> Mapping[str, int]:
         return self.store.recall_counts()
 
+    def recording_metrics(self) -> Mapping[str, object]:
+        return self.store.recording_metrics()
+
     def learning_metrics(self) -> Mapping[str, object]:
         return self.store.learning_metrics()
 
@@ -778,6 +1041,8 @@ class FailureMemoryService:
             "learning_metrics",
             "tier_two_generalization_review",
             "evidence_bounded_causal_diagnosis",
+            "single_call_failure_recording",
+            "recording_operation_telemetry",
             "repair_recommendation_telemetry",
             "causal_recall_filters",
             "generalization_proposal_review",
@@ -792,7 +1057,7 @@ class FailureMemoryService:
         )
         unavailable = [
             "production_feedback_ranking",
-            "copilot_cursor_prompt_context_hook",
+            "copilot_cli_cursor_prompt_context_hook",
         ]
         if retrieval_status is not None and retrieval_status.lexical_available:
             available.append("fts5_recall")
@@ -954,6 +1219,7 @@ def create_local_service(
     cwd: Path | None = None,
     harness: str | None = None,
     session_id: str | None = None,
+    enable_semantic: bool = True,
 ) -> FailureMemoryService:
     """Create a local SQLite service shared by command-line and MCP adapters."""
     root = resolve_data_root() if data_root is None else data_root
@@ -982,7 +1248,7 @@ def create_local_service(
         runtime_manager = AdapterRuntimeManager(context.data_root)
         embedding_provider = None
         profile_component = "fts5-only"
-        if runtime_manager.activate():
+        if enable_semantic and runtime_manager.activate():
             from failure_memory.adapters.embedding.fastembed import FastEmbedProvider
 
             embedding_provider = FastEmbedProvider(runtime_manager.model_root)
@@ -1030,6 +1296,33 @@ def create_local_service(
 
 def _redact_incident(incident: IncidentDraft) -> tuple[IncidentDraft, tuple[RedactionResult, ...]]:
     return _redact_draft(incident)
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, round((time.monotonic() - started) * 1000))
+
+
+def _portable_component_reference(value: str, layer: CauseLayer) -> str:
+    cleaned = re.sub(r"[^a-z0-9_.:/-]+", "-", value.strip().casefold()).strip("-./:")
+    if ":" in cleaned and re.fullmatch(
+        r"[a-z][a-z0-9_-]{0,31}:[a-z0-9][a-z0-9_.:/-]{0,159}",
+        cleaned,
+    ):
+        return cleaned
+    namespace = re.sub(r"[^a-z0-9_-]", "-", layer.value)[:32] or "component"
+    path = cleaned[:160] or "unlocated"
+    return f"{namespace}:{path}"
+
+
+def _default_lesson_title(summary: str) -> str:
+    compact = re.sub(r"\s+", " ", summary).strip().rstrip(".")
+    return compact[:120] or "Prevent recurrence"
+
+
+def _semantic_status(status: Mapping[str, object]) -> str:
+    return "ready" if status.get("semantic_available") is True else "pending"
+
+
 
 
 def _redact_lesson(lesson: LessonDraft) -> tuple[LessonDraft, tuple[RedactionResult, ...]]:

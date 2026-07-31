@@ -1,7 +1,7 @@
 {
   "name": "failure-memory",
-  "version": "0.6.0",
-  "description": "Qualify real agent failures, diagnose root causes, preserve durable lessons locally, and recall recurrence-prevention guidance.",
+  "version": "0.7.0",
+  "description": "Remember real agent failures in one fast call and recall durable local lessons across harnesses.",
   "author": {
     "name": "CongBao",
     "url": "https://github.com/CongBao"
@@ -19,8 +19,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Failure Memory",
-    "shortDescription": "Learn from real failures without recording requirement changes.",
-    "longDescription": "Distinguishes real failures from requirement changes, records evidence-bounded root causes and repair recommendations, stores immutable incidents and versioned proposed lessons in one owner-private global memory, and recalls recurrence-prevention guidance across trusted agent harnesses.",
+    "shortDescription": "Remember real failures quickly without saving requirement changes.",
+    "longDescription": "Uses one recording call to distinguish real failures from requirement changes, preserve evidence-bounded root causes and proposed repairs, reuse exact lessons, and append telemetry. All installed harnesses recall from one owner-private global memory.",
     "developerName": "CongBao",
     "category": "Productivity",
     "capabilities": [
