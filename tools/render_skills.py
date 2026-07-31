@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 SKILL_NAMES = ("record-agent-failure", "recall-failure-lessons")
-_RECORD_CONTRACT_JSON = r"""{"contract_version":3,"policy_kind":"record_failure","skill":{"name":"record-agent-failure","description":"Use when a user challenges an agent outcome, reports a missed prior invariant or repeated correction, or explicitly asks the agent to learn from a failure; not for new requirements, newly supplied details, first-time preferences, or ordinary refinement."},"policy":{"core":{"corrective_wording_is_failure_evidence":false,"expectation_time_basis":"before_outcome","required_mismatch_qualities":["material","controllable","durable"]},"evidence":{"establish_chronology":true,"fields":["expectation_source","availability_time","observed_outcome","inspectable_mismatch","impact_or_recurrence_risk","controllability_with_then_available_information","durable_prevention_value"],"prohibit_invention":true,"draft_exclusions":["raw_prompts","secrets","unnecessary_user_text"]},"classification":{"cardinality":1,"tier":"Tier One","classes":[{"id":"requirement_update","criterion":"The requested feature or contract changed after the outcome."},{"id":"requirement_clarification","criterion":"A previously unavailable detail now clarifies the work."},{"id":"preference_update","criterion":"A preference is stated for the first time."},{"id":"real_failure","criterion":"A prior expectation, mismatch, impact/risk, controllability, and durable lesson are all evidenced."},{"id":"mixed","criterion":"Feedback contains both a genuine prior-invariant mismatch and new work."},{"id":"uncertain","criterion":"Chronology or evidence cannot establish the criteria; do not guess."}]},"tools":{"evaluate":"evaluate_failure_candidate","review":"review_failure_recording","record":"record_failure_incident"},"workflow":{"entry":"classify","tool_order":["evaluate_failure_candidate","review_failure_recording","record_failure_incident"],"edges":[{"id":"classify_to_evaluate","from":"classify","to":"evaluate","condition":"always"},{"id":"evaluate_accept_to_review","from":"evaluate","to":"review","condition":"decision == accept"},{"id":"review_to_record","from":"review","to":"record","condition":"explicit disposition selected"},{"id":"evaluate_reject_defer_to_terminal","from":"evaluate","to":"terminal_no_write","condition":"decision in [reject, defer]"}]},"evaluation":{"every_classification":true,"pre_accept_record_allowed":false,"none_is_evaluated_decision":false,"applies_to":["uncertain","requirement_classes"]},"terminal_decisions":{"reject":{"report_and_stop":true,"write":false,"label_as_failure":false},"defer":{"report_and_stop":true,"write":false,"label_as_failure":false}},"requirement_summary":{"required_slots":["literal_class","evaluation_only","chronology_reason"],"required_ending":"The work may still be implemented through the ordinary requirement workflow.","brevity_may_omit":false},"mixed":{"split_before_evaluation":true,"record_portion":"prior_invariant_only","new_work_role":"context_only","new_work_route":"ordinary_requirement_workflow","include_new_work_in_lesson":false,"shared_topic_converts_new_work":false,"urgency_converts_new_work":false,"authority_converts_new_work":false,"intended_call_format":"evaluate_then_review_then_record_only_if_accept_otherwise_no_write","unconditioned_record_listing_allowed":false},"accepted_capture":{"draft_only_after":"accept","incident_mutability":"immutable","lesson_count":1,"lesson_authority":"proposed","source_portion":"accepted_failure_portion","record_capture_id_state":"accepted","record_drafts_sanitized":true},"generalization_review":{"required_before_record":true,"candidate_limit":3,"automatic_merge":false,"allowed_dispositions":["reuse_existing","generalize_existing","create_distinct"],"exact_reuse_required":true,"rationale_code_required":true,"defer_if_fit_is_uncertain":true},"result_reporting":{"distinguish":["created_new_proposed_lesson","reused_existing_lesson","generalized_existing_lesson"],"cite_returned_identifiers":true,"allow_verified_description":false},"example":{"prior_invariant":"no_raw_prompts","observed_violation":"stored_raw_prompts","new_work":"encryption_at_rest","classification":"mixed","record_only":"raw_prompt_violation","new_work_route":"ordinary_requirement_workflow"},"rationalization_checks":[{"temptation":"The user called it a failure.","response":"Reconstruct chronology; wording is not evidence."},{"temptation":"The new control would have prevented it.","response":"Hindsight does not make the control a prior requirement."},{"temptation":"Bundle both issues to save time.","response":"Split `mixed`; never broaden the immutable incident."},{"temptation":"Record now and qualify later.","response":"Evaluation must precede recording."}],"stop_conditions":["inventing_chronology","using_ad_hoc_class","recording_rejected_or_deferred_capture","upgrading_proposed_lesson_to_verified"]}}"""
+_RECORD_CONTRACT_JSON = r"""{"contract_version":4,"policy_kind":"record_failure","skill":{"name":"record-agent-failure","description":"Use when a user challenges an agent outcome, reports a missed prior invariant or repeated correction, or explicitly asks the agent to learn from a failure; not for new requirements, newly supplied details, first-time preferences, or ordinary refinement."},"policy":{"core":{"corrective_wording_is_failure_evidence":false,"expectation_time_basis":"before_outcome","required_mismatch_qualities":["material","controllable","durable"]},"evidence":{"establish_chronology":true,"fields":["expectation_source","availability_time","observed_outcome","inspectable_mismatch","impact_or_recurrence_risk","controllability_with_then_available_information","durable_prevention_value"],"prohibit_invention":true,"draft_exclusions":["raw_prompts","secrets","unnecessary_user_text"]},"classification":{"cardinality":1,"tier":"Tier One","classes":[{"id":"requirement_update","criterion":"The requested feature or contract changed after the outcome."},{"id":"requirement_clarification","criterion":"A previously unavailable detail now clarifies the work."},{"id":"preference_update","criterion":"A preference is stated for the first time."},{"id":"real_failure","criterion":"A prior expectation, mismatch, impact/risk, controllability, and durable lesson are all evidenced."},{"id":"mixed","criterion":"Feedback contains both a genuine prior-invariant mismatch and new work."},{"id":"uncertain","criterion":"Chronology or evidence cannot establish the criteria; do not guess."}]},"tools":{"evaluate":"evaluate_failure_candidate","diagnose":"diagnose_failure_cause","review":"review_failure_recording","record":"record_failure_incident","repair_outcome":"record_failure_repair_outcome"},"workflow":{"entry":"classify","tool_order":["evaluate_failure_candidate","diagnose_failure_cause","review_failure_recording","record_failure_incident"],"edges":[{"id":"classify_to_evaluate","from":"classify","to":"evaluate","condition":"always"},{"id":"evaluate_accept_to_diagnose","from":"evaluate","to":"diagnose","condition":"decision == accept"},{"id":"diagnose_to_review","from":"diagnose","to":"review","condition":"causal_assessment_recorded"},{"id":"review_to_record","from":"review","to":"record","condition":"explicit disposition selected"},{"id":"evaluate_reject_defer_to_terminal","from":"evaluate","to":"terminal_no_write","condition":"decision in [reject, defer]"}]},"evaluation":{"every_classification":true,"pre_accept_record_allowed":false,"none_is_evaluated_decision":false,"applies_to":["uncertain","requirement_classes"]},"terminal_decisions":{"reject":{"report_and_stop":true,"write":false,"label_as_failure":false},"defer":{"report_and_stop":true,"write":false,"label_as_failure":false}},"requirement_summary":{"required_slots":["literal_class","evaluation_only","chronology_reason"],"required_ending":"The work may still be implemented through the ordinary requirement workflow.","brevity_may_omit":false},"mixed":{"split_before_evaluation":true,"record_portion":"prior_invariant_only","new_work_role":"context_only","new_work_route":"ordinary_requirement_workflow","include_new_work_in_lesson":false,"shared_topic_converts_new_work":false,"urgency_converts_new_work":false,"authority_converts_new_work":false,"intended_call_format":"evaluate_then_diagnose_then_review_then_record_only_if_accept_otherwise_no_write","unconditioned_record_listing_allowed":false},"accepted_capture":{"draft_only_after":"accept","incident_mutability":"immutable","lesson_count":1,"lesson_authority":"proposed","source_portion":"accepted_failure_portion","record_capture_id_state":"accepted","record_drafts_sanitized":true},"causal_diagnosis":{"required_before_review":true,"evidence_bounded":true,"primary_factor_count":1,"maximum_factors":4,"maximum_recommendations":3,"unknown_allowed":true,"prefer_most_specific_inspectable_layer":true,"component_reference_format":"portable_namespaced","layers":["skill_instruction","agent_instruction","project_instruction","system_instruction","hook_policy","plugin_manifest","tool_contract","application_logic","adapter_runtime","schema_migration","test_evaluation_gap","harness_limitation","model_behavior","external_dependency","unknown"],"failure_modes":["missing","ambiguous","conflicting","not_loaded","not_triggered","ignored","incorrectly_implemented","insufficient_validation","uninspectable","unknown"],"recommendation_role":"proposed_repair","automatic_edit":false},"generalization_review":{"required_before_record":true,"candidate_limit":3,"automatic_merge":false,"allowed_dispositions":["reuse_existing","generalize_existing","create_distinct"],"exact_reuse_required":true,"rationale_code_required":true,"defer_if_fit_is_uncertain":true},"result_reporting":{"distinguish":["created_new_proposed_lesson","reused_existing_lesson","generalized_existing_lesson"],"cite_returned_identifiers":true,"allow_verified_description":false},"repair_feedback":{"only_after_observable_outcome":true,"do_not_invent":true,"allowed_outcomes":["applied","rejected","partially_applied","verified_effective","verified_ineffective","recurrence_observed","superseded"]},"example":{"prior_invariant":"no_raw_prompts","observed_violation":"stored_raw_prompts","new_work":"encryption_at_rest","classification":"mixed","record_only":"raw_prompt_violation","new_work_route":"ordinary_requirement_workflow"},"rationalization_checks":[{"temptation":"The user called it a failure.","response":"Reconstruct chronology; wording is not evidence."},{"temptation":"The new control would have prevented it.","response":"Hindsight does not make the control a prior requirement."},{"temptation":"Bundle both issues to save time.","response":"Split `mixed`; never broaden the immutable incident."},{"temptation":"Record now and qualify later.","response":"Evaluation must precede recording."}],"stop_conditions":["inventing_chronology","using_ad_hoc_class","recording_rejected_or_deferred_capture","upgrading_proposed_lesson_to_verified"]}}"""
 _RECALL_CONTRACT_JSON = r"""{"contract_version":4,"policy_kind":"recall_failure","skill":{"name":"recall-failure-lessons","description":"Use before risky or recurring work, or when a current task resembles a previously recorded failure and concrete task evidence can support a bounded lesson lookup."},"policy":{"core":{"mode":"exact_first_bounded_hybrid","similarity_search":true,"returned_lesson_role":"traceable_caution","manufacture_memory":false,"manufacture_authority":false,"automatic_merge":false},"evidence":{"context_field":"text","discriminator_fields":["expected_invariant","controllable_cause","prevention_action","component"],"minimum_discriminators":1,"source":"current_task_evidence","allow_inference":false,"query_exclusions":["raw_prompts","secrets","unnecessary_user_text"],"forbidden_fill_basis":["resemblance_alone","recurrence_anxiety","authority_guess"]},"tools":{"recall":"recall_failure_lessons","feedback":"record_recall_outcome"},"lookup":{"max_calls":1,"default_mode":"auto","exact_first":true,"allow_modes":["auto","exact","lexical","semantic","hybrid"],"default_top_k":3,"hard_max_top_k":5,"allow_bulk":false,"allow_query_broadening":false},"workflow":{"entry":"check_evidence","edges":[{"id":"sufficient_evidence_to_recall","from":"check_evidence","to":"recall","condition":"context_and_discriminator_present"},{"id":"insufficient_evidence_to_continue","from":"check_evidence","to":"continue_without_guidance","condition":"evidence_insufficient"},{"id":"matches_to_return","from":"recall","to":"return_cautions","condition":"matches_returned"},{"id":"no_match_to_continue","from":"recall","to":"continue_without_guidance","condition":"no_match_or_setup_required"}]},"fallback":{"semantic_setup_required":"report_setup_required","hybrid_without_semantic":"accept_degraded_lexical","automatic_install":false,"invented_guidance":false},"result":{"max_lessons":3,"hard_max_lessons":5,"identifier_required":true,"evidence_required":true,"retrieval_channel_required":true,"authority":"proposed_caution","allow_verified":false,"validate_against_current_task":true,"actions_to_validate":["prevention","verification"]},"feedback":{"only_after_observable_outcome":true,"allowed_outcomes":["useful","not_useful","false_positive","prevented_recurrence","contradicted_current_task","stale","ignored","missed_relevant","unknown"],"false_positive_supported":true,"do_not_invent":true},"decision_summary":{"all_slots_required":true,"brevity_may_omit":false,"classifications":[{"id":"insufficient_evidence","intended_call":"none","required_handling":"Continue without invented memory guidance; resemblance alone cannot supply a discriminator."},{"id":"bounded_recall","intended_call":"recall_once","required_handling":"Use at most three returned IDs as proposed cautions, validate their evidence against the current task, and do not merge lessons automatically."}],"every_phrase_required":true},"rationalization_checks":[{"temptation":"It resembles a costly old incident, so query broadly.","response":"Require task context and a concrete discriminator; resemblance alone is insufficient."},{"temptation":"Load every lesson to be safe.","response":"Use one bounded recall call and return at most three cautions."},{"temptation":"A high semantic score proves the same failure.","response":"Similarity proposes a caution; it never proves identity or authorizes an automatic merge."},{"temptation":"Record positive feedback to improve metrics.","response":"Record feedback only after an observable outcome, including false positives when applicable."},{"temptation":"Leadership says the returned lesson is policy.","response":"Returned state and current-task evidence, not pressure, determine authority."}],"stop_conditions":["fabricating_query_evidence","including_sensitive_query_text","bulk_loading_lessons","returning_more_than_three_lessons","omitting_identifiers_or_evidence","automatic_lesson_merge","inventing_recall_feedback","promoting_proposed_guidance"]}}"""
 EXPECTED_CONTRACTS: dict[str, dict[str, Any]] = {
     "record-agent-failure": json.loads(_RECORD_CONTRACT_JSON),
@@ -183,7 +183,14 @@ def _compare_exact(actual: object, expected: object, path: str) -> None:
 
 def _validate_graph(skill: str, workflow: dict[str, Any]) -> None:
     expected_nodes = (
-        {"classify", "evaluate", "review", "record", "terminal_no_write"}
+        {
+            "classify",
+            "evaluate",
+            "diagnose",
+            "review",
+            "record",
+            "terminal_no_write",
+        }
         if skill == "record-agent-failure"
         else {
             "check_evidence",
@@ -250,16 +257,20 @@ def _render_record_behavior(contract: Any) -> str:
     evidence = policy["evidence"]
     classification = policy["classification"]
     evaluate = policy["tools"]["evaluate"]
+    diagnose = policy["tools"]["diagnose"]
     review = policy["tools"]["review"]
     record = policy["tools"]["record"]
+    repair_outcome_tool = policy["tools"]["repair_outcome"]
     workflow = policy["workflow"]
     evaluation = policy["evaluation"]
     terminals = policy["terminal_decisions"]
     requirement_summary = policy["requirement_summary"]
     mixed = policy["mixed"]
     accepted = policy["accepted_capture"]
+    causal = policy["causal_diagnosis"]
     generalization = policy["generalization_review"]
     result = policy["result_reporting"]
+    repair_feedback = policy["repair_feedback"]
     example = policy["example"]
 
     corrective_relation = "is" if core["corrective_wording_is_failure_evidence"] else "is not"
@@ -273,7 +284,8 @@ def _render_record_behavior(contract: Any) -> str:
     class_count = _number_word(classification["cardinality"])
     tier = classification["tier"]
     classify_edge = _edge_by_id(policy, "classify_to_evaluate")
-    accept_edge = _edge_by_id(policy, "evaluate_accept_to_review")
+    accept_edge = _edge_by_id(policy, "evaluate_accept_to_diagnose")
+    diagnose_edge = _edge_by_id(policy, "diagnose_to_review")
     review_edge = _edge_by_id(policy, "review_to_record")
     terminal_edge = _edge_by_id(policy, "evaluate_reject_defer_to_terminal")
     accept_decision = accept_edge["condition"].removeprefix("decision == ")
@@ -302,6 +314,9 @@ def _render_record_behavior(contract: Any) -> str:
         "recording a rejected or deferred capture",
         "recording a rejected or\ndeferred capture",
     )
+    causal_layers = ", ".join(f"`{layer}`" for layer in causal["layers"])
+    failure_modes = ", ".join(f"`{mode}`" for mode in causal["failure_modes"])
+    repair_outcomes = ", ".join(f"`{outcome}`" for outcome in repair_feedback["allowed_outcomes"])
 
     if (
         not before_outcome
@@ -319,11 +334,14 @@ def _render_record_behavior(contract: Any) -> str:
         or evidence["prohibit_invention"] is not True
         or draft_exclusions != ["raw_prompts", "secrets", "unnecessary_user_text"]
         or workflow["entry"] != classify_edge["from"]
-        or workflow["tool_order"] != [evaluate, review, record]
+        or workflow["tool_order"] != [evaluate, diagnose, review, record]
         or classify_edge["to"] != "evaluate"
         or classify_edge["condition"] != "always"
         or accept_edge["from"] != "evaluate"
-        or accept_edge["to"] != "review"
+        or accept_edge["to"] != "diagnose"
+        or diagnose_edge["from"] != "diagnose"
+        or diagnose_edge["to"] != "review"
+        or diagnose_edge["condition"] != "causal_assessment_recorded"
         or review_edge["from"] != "review"
         or review_edge["to"] != "record"
         or review_edge["condition"] != "explicit disposition selected"
@@ -346,15 +364,68 @@ def _render_record_behavior(contract: Any) -> str:
         or mixed["urgency_converts_new_work"]
         or mixed["authority_converts_new_work"]
         or mixed["intended_call_format"]
-        != "evaluate_then_review_then_record_only_if_accept_otherwise_no_write"
+        != "evaluate_then_diagnose_then_review_then_record_only_if_accept_otherwise_no_write"
         or mixed["unconditioned_record_listing_allowed"]
         or accepted["draft_only_after"] != accept_decision
         or accepted["incident_mutability"] != "immutable"
         or accepted["source_portion"] != "accepted_failure_portion"
         or accepted["record_capture_id_state"] != "accepted"
         or accepted["record_drafts_sanitized"] is not True
+        or causal["required_before_review"] is not True
+        or causal["evidence_bounded"] is not True
+        or causal["primary_factor_count"] != 1
+        or causal["maximum_factors"] != 4
+        or causal["maximum_recommendations"] != 3
+        or causal["unknown_allowed"] is not True
+        or causal["prefer_most_specific_inspectable_layer"] is not True
+        or causal["component_reference_format"] != "portable_namespaced"
+        or causal["layers"]
+        != [
+            "skill_instruction",
+            "agent_instruction",
+            "project_instruction",
+            "system_instruction",
+            "hook_policy",
+            "plugin_manifest",
+            "tool_contract",
+            "application_logic",
+            "adapter_runtime",
+            "schema_migration",
+            "test_evaluation_gap",
+            "harness_limitation",
+            "model_behavior",
+            "external_dependency",
+            "unknown",
+        ]
+        or causal["failure_modes"]
+        != [
+            "missing",
+            "ambiguous",
+            "conflicting",
+            "not_loaded",
+            "not_triggered",
+            "ignored",
+            "incorrectly_implemented",
+            "insufficient_validation",
+            "uninspectable",
+            "unknown",
+        ]
+        or causal["recommendation_role"] != "proposed_repair"
+        or causal["automatic_edit"] is not False
         or result["cite_returned_identifiers"] is not True
         or result["allow_verified_description"] is not False
+        or repair_feedback["only_after_observable_outcome"] is not True
+        or repair_feedback["do_not_invent"] is not True
+        or repair_feedback["allowed_outcomes"]
+        != [
+            "applied",
+            "rejected",
+            "partially_applied",
+            "verified_effective",
+            "verified_ineffective",
+            "recurrence_observed",
+            "superseded",
+        ]
         or generalization["required_before_record"] is not True
         or generalization["candidate_limit"] != 3
         or generalization["automatic_merge"] is not False
@@ -396,13 +467,14 @@ knowable before the outcome, then preserve only a {qualities} mismatch.
 
 | Contract key | Normative rule |
 |---|---|
-| `first_call` | `{evaluate}` MUST precede `{review}` and `{record}` and MUST be the first failure-memory call for every {tier} classification. |
-| `write_gate` | `{review}` and `{record}` MUST be called ONLY IF evaluation returns `{accept_decision}`; `{record}` MUST NOT be called for `{terminal_decisions[0]}` or `{terminal_decisions[1]}`. |
-| `second_tier` | `{review}` MUST precede `{record}`; review at most three candidates and never merge automatically. |
+| `first_call` | `{evaluate}` MUST precede `{diagnose}`, `{review}`, and `{record}` and MUST be the first failure-memory call for every {tier} classification. |
+| `write_gate` | `{diagnose}`, `{review}`, and `{record}` MUST be called ONLY IF evaluation returns `{accept_decision}`; none may be called for `{terminal_decisions[0]}` or `{terminal_decisions[1]}`. |
+| `causal_gate` | `{diagnose}` MUST precede `{review}`. Use inspectable evidence, one primary factor, up to four total factors, and up to three proposed repairs; use `unknown` instead of guessing. |
+| `second_tier` | `{review}` MUST precede `{record}`; pass the causal assessment ID, review at most three candidates, and never merge automatically. |
 | `rejected_status` | A rejected or deferred capture MUST NOT be described or called a failure. |
 | `lesson_authority` | A new or reused lesson MUST remain `{initial_authority}`; a proposed lesson MUST NOT be described, promoted, or treated as `verified`. |
-| `mixed_output` | For `mixed`, the intended-call field MUST be `{evaluate} -> {review} -> {record} only if decision={accept_decision} (otherwise no write)`, and new requirements MUST remain outside the failure. |
-| `post_accept_output` | For an accepted capture with a related candidate, name `{review} -> {record} only after explicit disposition`; also state: inspect at most three; select `reuse_existing`, `generalize_existing`, or `create_distinct` with rationale; defer if uncertain; never auto-merge or promote to verified. |
+| `mixed_output` | For `mixed`, the intended-call field MUST be `{evaluate} -> {diagnose} -> {review} -> {record} only if decision={accept_decision} (otherwise no write)`, and new requirements MUST remain outside the failure. |
+| `post_accept_output` | For an accepted capture, name `{diagnose} -> {review} -> {record}`; diagnose before similarity review, select an explicit disposition with rationale, defer if uncertain, and never auto-merge or promote to verified. |
 
 ## Required workflow
 
@@ -427,19 +499,29 @@ knowable before the outcome, then preserve only a {qualities} mismatch.
    mismatch in the failure portion; retain a new requirement only as context. Shared
    topic, urgency, or authority never turns new work into a lesson. The intended-call
    field has this required shape:
-   `{evaluate} -> {review} -> {record} only if decision={accept_decision}
+   `{evaluate} -> {diagnose} -> {review} -> {record} only if decision={accept_decision}
    (otherwise no write)`. Never list the record call without its acceptance condition.
 6. Only after `{accept_decision}`, draft the immutable incident and {lesson_count} {initial_authority} lesson from the
    accepted failure portion.
-7. Call `{review}` with the accepted capture ID and the same sanitized drafts. Inspect at
+7. Call `{diagnose}` with the accepted capture ID. Identify one primary factor and at most
+   three contributing factors from inspectable evidence. Prefer the most specific layer that
+   explains the mechanism, using one of: {causal_layers}. Classify its failure mode as one
+   of: {failure_modes}. Use portable namespaced component references. If the evidence cannot
+   locate a cause, record an explicit `unknown` assessment rather than blaming a prompt,
+   skill, model, or system by inference. Add one to three proposed repair recommendations
+   naming where to fix the cause and how to verify the change; do not edit targets automatically.
+8. Call `{review}` with the accepted capture ID, causal assessment ID, and the same sanitized drafts. Inspect at
    most three candidates. Exact matches must be reused; related matches require an explicit
    `reuse_existing`, `generalize_existing`, or `create_distinct` disposition and rationale.
    If fit is uncertain, defer recording. Similarity never authorizes an automatic merge.
-8. Call `{record}` with the review ID, disposition, rationale, accepted capture ID, and
-   unchanged drafts. Target a returned lesson version for reuse or generalization.
-9. Report whether the result created, reused, or generalized a proposed lesson. Cite the
-   review, decision, incident, lesson, and version identifiers. Never describe a proposed
-   lesson as verified.
+9. Call `{record}` with the causal assessment ID, review ID, disposition, rationale,
+   accepted capture ID, and unchanged drafts. Target a returned lesson version for reuse
+   or generalization.
+10. Report whether the result created, reused, or generalized a proposed lesson. Cite the
+    causal assessment, repair recommendation, review, decision, incident, lesson, and version
+    identifiers. Never describe a proposed lesson or repair as verified. Only after an
+    observable repair outcome, call `{repair_outcome_tool}` with one of {repair_outcomes};
+    never invent repair feedback.
 
 ## Mixed example
 

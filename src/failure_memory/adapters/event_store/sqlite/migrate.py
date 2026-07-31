@@ -97,17 +97,62 @@ def _applied_migrations(connection: sqlite3.Connection) -> dict[int, str]:
 
 
 def _validate_applied_migrations(
+    connection: sqlite3.Connection,
     applied: dict[int, str],
     expected: dict[int, tuple[str, str]],
 ) -> None:
     unknown_versions = sorted(set(applied) - set(expected))
     if unknown_versions:
-        rendered = ", ".join(str(version) for version in unknown_versions)
-        raise ValueError(f"unknown applied migration versions: {rendered}")
+        known_maximum = max(expected, default=0)
+        expected_missing = sorted(set(expected) - set(applied))
+        if expected_missing:
+            rendered = ", ".join(str(version) for version in expected_missing)
+            raise ValueError(f"known migrations missing before newer schema: {rendered}")
+        if not _compatible_unknown_migrations(connection, unknown_versions, known_maximum):
+            rendered = ", ".join(str(version) for version in unknown_versions)
+            raise ValueError(f"unknown applied migration versions: {rendered}")
     for version, applied_checksum in applied.items():
+        if version not in expected:
+            continue
         name, expected_checksum = expected[version]
         if applied_checksum != expected_checksum:
             raise ValueError(f"migration checksum mismatch: {name}")
+
+
+def _compatible_unknown_migrations(
+    connection: sqlite3.Connection,
+    unknown_versions: list[int],
+    known_maximum: int,
+) -> bool:
+    capability_table = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_schema
+        WHERE type = 'table' AND name = 'store_schema_capability'
+        """
+    ).fetchone()
+    if capability_table is None:
+        return False
+    rows = connection.execute(
+        """
+        SELECT migration_version, schema_kind, minimum_writer_migration
+        FROM store_schema_capability
+        WHERE migration_version IN ({})
+        """.format(",".join("?" for _version in unknown_versions)),
+        tuple(unknown_versions),
+    ).fetchall()
+    capabilities = {
+        int(row["migration_version"]): (
+            str(row["schema_kind"]),
+            int(row["minimum_writer_migration"]),
+        )
+        for row in rows
+    }
+    for version in unknown_versions:
+        capability = capabilities.get(version)
+        if capability is None or capability[0] != "additive" or capability[1] > known_maximum:
+            return False
+    return True
 
 
 def _apply_migrations_once(
@@ -117,7 +162,7 @@ def _apply_migrations_once(
 ) -> tuple[int, ...]:
     if _migration_ledger_exists(connection):
         applied = _applied_migrations(connection)
-        _validate_applied_migrations(applied, expected)
+        _validate_applied_migrations(connection, applied, expected)
         if set(applied) == set(expected):
             return ()
     connection.execute(
@@ -134,7 +179,7 @@ def _apply_migrations_once(
     try:
         connection.execute("BEGIN IMMEDIATE")
         applied = _applied_migrations(connection)
-        _validate_applied_migrations(applied, expected)
+        _validate_applied_migrations(connection, applied, expected)
         for version, name, sql in migrations:
             checksum = expected[version][1]
             if version in applied:

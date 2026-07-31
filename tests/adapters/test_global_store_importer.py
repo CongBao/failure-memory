@@ -9,6 +9,18 @@ import pytest
 
 from failure_memory.application.service import FailureMemoryService, create_local_service
 from failure_memory.domain.capture import Classification, ExpectationSource, FailureCandidate
+from failure_memory.domain.causal import (
+    CausalAssessmentDraft,
+    CausalAssessmentState,
+    CausalConfidence,
+    CausalFactorDraft,
+    CausalFactorRole,
+    CauseLayer,
+    FailureMode,
+    RepairOutcome,
+    RepairOutcomeKind,
+    RepairRecommendationDraft,
+)
 from failure_memory.domain.records import IncidentDraft, LessonDraft, lesson_signature
 
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -165,4 +177,78 @@ def test_import_aborts_before_writes_on_conflicting_record_id(tmp_path: Path) ->
     assert (
         target.store.connection.execute("SELECT COUNT(*) FROM capture_attempt").fetchone()[0] == 1
     )
+    target.close()
+
+
+def test_copy_only_import_preserves_causal_and_repair_history(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source = create_local_service(
+        data_root=source_root,
+        cwd=tmp_path / "workspace",
+        harness="codex",
+    )
+    evaluated = source.evaluate_failure_candidate(
+        FailureCandidate(
+            summary="A known migration preflight was skipped.",
+            classification=Classification.REAL_FAILURE,
+            expectation_source=ExpectationSource.ACCEPTED_DESIGN,
+            expectation_established_at=NOW - timedelta(minutes=1),
+            observed_outcome_at=NOW,
+            outcome_mismatch=True,
+            material_impact_or_recurrence_risk=True,
+            controllable_with_prior_information=True,
+            durable_lesson=True,
+        )
+    )
+    assessment = source.diagnose_failure_cause(
+        evaluated.capture_attempt_id,
+        CausalAssessmentDraft(
+            state=CausalAssessmentState.SUPPORTED,
+            factors=(
+                CausalFactorDraft(
+                    role=CausalFactorRole.PRIMARY,
+                    layer=CauseLayer.SKILL_INSTRUCTION,
+                    failure_mode=FailureMode.MISSING,
+                    component_reference="skill:migration-preflight",
+                    evidence_summary="The required step was absent.",
+                    confidence=CausalConfidence.HIGH,
+                ),
+            ),
+            recommendations=(
+                RepairRecommendationDraft(
+                    target_layer=CauseLayer.SKILL_INSTRUCTION,
+                    target_reference="skill:migration-preflight",
+                    recommended_change="Add the preflight step.",
+                    verification_action="Run a missing-preflight fixture.",
+                    rationale="The instruction owns the absent control.",
+                    confidence=CausalConfidence.HIGH,
+                ),
+            ),
+        ),
+    )
+    source.record_failure_repair_outcome(
+        RepairOutcome(
+            recommendation_id=assessment.recommendation_ids[0],
+            outcome=RepairOutcomeKind.APPLIED,
+            detail_code="instruction_updated",
+            evidence_summary="The instruction now includes the preflight.",
+            confidence=CausalConfidence.HIGH,
+        )
+    )
+    source.close()
+
+    target = create_local_service(
+        data_root=tmp_path / "target",
+        cwd=tmp_path / "workspace",
+        harness="claude-code",
+    )
+    assert target.store_importer is not None
+    result = target.store_importer.apply(_database(source_root))
+
+    assert result.imported_counts["failure_causal_assessment"] == 1
+    assert result.imported_counts["failure_causal_factor"] == 1
+    assert result.imported_counts["failure_repair_recommendation"] == 1
+    assert result.imported_counts["failure_repair_outcome_event"] == 1
+    assert target.learning_metrics()["causal_assessment_count"] == 1
+    assert target.learning_metrics()["applied_recommendation_count"] == 1
     target.close()

@@ -33,6 +33,17 @@ The required second-tier decision after a real failure is accepted: reuse an exa
 reuse or broaden a reviewed related lesson, create a distinct lesson, or defer recording.
 _Avoid_: Duplicate check, automatic deduplication
 
+**Causal Assessment**:
+An append-only, evidence-bounded explanation of the layer and mechanism that produced an
+accepted failure, with exactly one primary factor and explicit uncertainty when the cause
+cannot be inspected.
+_Avoid_: Blame, guessed root cause
+
+**Repair Recommendation**:
+A proposed change targeted at the most specific inspectable component, paired with a
+verification action and append-only outcome history.
+_Avoid_: Automatic fix, verified repair
+
 **Harness Projection**:
 A host-specific manifest, skill, MCP, and hook view over the shared core and Global Personal
 Memory; it never owns a separate memory store.

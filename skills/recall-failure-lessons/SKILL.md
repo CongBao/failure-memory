@@ -5,7 +5,7 @@ description: Use before risky or recurring work, or when a current task resemble
 
 # Recall Failure Lessons
 
-<!-- Generated from contract.json by tools/render_skills.py; policy sha256=5f80d5f51a83bab13f2a447cd5a9521d82e9bbcf643fe1578a19e2441dfc4f36; behavior sha256=0e4559348e76c7f7903233538306cc1aa618ce9b48d5c6cc07d9b9aeba67cec4; renderer sha256=1f13de2458b77e160e499097c60f26d317f8185eb680aba86e360dc11a4a4983; DO NOT EDIT SKILL.md MANUALLY. -->
+<!-- Generated from contract.json by tools/render_skills.py; policy sha256=5f80d5f51a83bab13f2a447cd5a9521d82e9bbcf643fe1578a19e2441dfc4f36; behavior sha256=0e4559348e76c7f7903233538306cc1aa618ce9b48d5c6cc07d9b9aeba67cec4; renderer sha256=ee5e51546267ac2c257983eea23b4e4ad685f8b6212ae21b4ed0f6b00ade4410; DO NOT EDIT SKILL.md MANUALLY. -->
 
 ## Core principle
 

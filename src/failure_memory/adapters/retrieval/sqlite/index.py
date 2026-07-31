@@ -12,6 +12,7 @@ from failure_memory.adapters.event_store.sqlite.connection import (
     secure_sqlite_files,
 )
 from failure_memory.application.errors import SemanticSetupRequiredError
+from failure_memory.domain.causal import CauseLayer, FailureMode
 from failure_memory.domain.learning import SimilarityPair
 from failure_memory.domain.retrieval import (
     EmbeddingSpec,
@@ -25,7 +26,8 @@ from failure_memory.domain.retrieval import (
 from failure_memory.ports.retrieval import EmbeddingProviderPort, RetrievalIndexPort
 
 _TOKEN = re.compile(r"[\w-]+", re.UNICODE)
-_SCHEMA_VERSION = "2"
+_SCHEMA_VERSION = "3"
+_PREVIOUS_SCHEMA_VERSION = "2"
 
 
 class SQLiteRetrievalIndex(RetrievalIndexPort):
@@ -115,15 +117,18 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
         expression = _fts_expression(query.canonical_text())
         if not expression:
             return ()
+        predicates, parameters = _causal_filter_sql(query, table_alias="indexed")
         rows = self.connection.execute(
-            """
-            SELECT lesson_version_id, bm25(lesson_fts) AS relevance
+            f"""
+            SELECT lesson_fts.lesson_version_id, bm25(lesson_fts) AS relevance
             FROM lesson_fts
+            JOIN indexed_lesson AS indexed ON indexed.rowid = lesson_fts.rowid
             WHERE lesson_fts MATCH ?
-            ORDER BY relevance, rowid
+              {predicates}
+            ORDER BY relevance, lesson_fts.rowid
             LIMIT ?
             """,
-            (expression, limit),
+            (expression, *parameters, limit),
         ).fetchall()
         return tuple(
             RetrievalMatch(
@@ -149,15 +154,17 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
             )
         vector = provider.embed_query(query.canonical_text())
         serialize = vec_module.serialize_float32
+        predicates, parameters = _causal_filter_sql(query, table_alias="lesson_vec")
         rows = self.connection.execute(
-            """
+            f"""
             SELECT lesson_version_id, distance
             FROM lesson_vec
             WHERE embedding MATCH ?
               AND k = ?
+              {predicates}
             ORDER BY distance
             """,
-            (serialize(vector), limit),
+            (serialize(vector), limit, *parameters),
         ).fetchall()
         return tuple(
             RetrievalMatch(
@@ -234,14 +241,11 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
                 lesson_version_id TEXT NOT NULL UNIQUE,
                 origin_workspace_fingerprint TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
-                content TEXT NOT NULL
+                content TEXT NOT NULL,
+                cause_layer TEXT,
+                failure_mode TEXT,
+                repair_target_layer TEXT
             ) STRICT
-            """
-        )
-        self.connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS indexed_lesson_origin_workspace_idx
-            ON indexed_lesson(origin_workspace_fingerprint)
             """
         )
         self.connection.execute(
@@ -264,8 +268,33 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
         row = self.connection.execute(
             "SELECT value FROM retrieval_metadata WHERE key = 'schema_version'"
         ).fetchone()
+        if row is not None and str(row["value"]) == _PREVIOUS_SCHEMA_VERSION:
+            self._upgrade_lexical_schema_v2_to_v3()
+            self.connection.execute(
+                """
+                UPDATE retrieval_metadata
+                SET value = ?
+                WHERE key = 'schema_version'
+                """,
+                (_SCHEMA_VERSION,),
+            )
+            row = self.connection.execute(
+                "SELECT value FROM retrieval_metadata WHERE key = 'schema_version'"
+            ).fetchone()
         if row is None or str(row["value"]) != _SCHEMA_VERSION:
             raise RuntimeError("unsupported retrieval index schema")
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS indexed_lesson_origin_workspace_idx
+            ON indexed_lesson(origin_workspace_fingerprint)
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS indexed_lesson_causal_idx
+            ON indexed_lesson(cause_layer, failure_mode, repair_target_layer)
+            """
+        )
 
     def _initialize_vector_schema(self, spec: EmbeddingSpec) -> None:
         if spec.dimensions <= 0:
@@ -278,12 +307,25 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
             raise RuntimeError(
                 "retrieval index embedding profile differs; rebuild with the configured profile"
             )
+        table = self.connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'lesson_vec'
+            """
+        ).fetchone()
+        rebuild = table is None or "cause_layer text" not in str(table["sql"]).casefold()
+        if table is not None and rebuild:
+            self.connection.execute("DROP TABLE lesson_vec")
         self.connection.execute(
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS lesson_vec USING vec0(
                 embedding float[{spec.dimensions}] distance_metric=cosine,
                 origin_workspace_fingerprint text,
-                lesson_version_id text
+                lesson_version_id text,
+                cause_layer text,
+                failure_mode text,
+                repair_target_layer text
             )
             """
         )
@@ -294,6 +336,8 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
             """,
             (expected,),
         )
+        if rebuild:
+            self._embed_existing_indexed_lessons()
 
     def _sync_global(self, documents: Sequence[RetrievalDocument]) -> int:
         expected_ids = {document.lesson_version.id for document in documents}
@@ -325,8 +369,9 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
                     """
                     INSERT INTO indexed_lesson(
                         rowid, lesson_version_id, origin_workspace_fingerprint,
-                        content_hash, content
-                    ) VALUES (?, ?, ?, ?, ?)
+                        content_hash, content, cause_layer, failure_mode,
+                        repair_target_layer
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         rowid,
@@ -334,20 +379,27 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
                         document.workspace_fingerprint,
                         document.content_hash,
                         document.canonical_text(),
+                        _enum_value(document.cause_layer),
+                        _enum_value(document.failure_mode),
+                        _enum_value(document.repair_target_layer),
                     ),
                 )
             else:
                 cursor = self.connection.execute(
                     """
                     INSERT INTO indexed_lesson(
-                        lesson_version_id, origin_workspace_fingerprint, content_hash, content
-                    ) VALUES (?, ?, ?, ?)
+                        lesson_version_id, origin_workspace_fingerprint, content_hash,
+                        content, cause_layer, failure_mode, repair_target_layer
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         lesson_version_id,
                         document.workspace_fingerprint,
                         document.content_hash,
                         document.canonical_text(),
+                        _enum_value(document.cause_layer),
+                        _enum_value(document.failure_mode),
+                        _enum_value(document.repair_target_layer),
                     ),
                 )
                 if cursor.lastrowid is None:
@@ -386,16 +438,67 @@ class SQLiteRetrievalIndex(RetrievalIndexPort):
             self.connection.execute(
                 """
                 INSERT INTO lesson_vec(
-                    rowid, embedding, origin_workspace_fingerprint, lesson_version_id
-                ) VALUES (?, ?, ?, ?)
+                    rowid, embedding, origin_workspace_fingerprint, lesson_version_id,
+                    cause_layer, failure_mode, repair_target_layer
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rowid,
                     serialize(vector),
                     document.workspace_fingerprint,
                     document.lesson_version.id,
+                    _enum_value(document.cause_layer) or "",
+                    _enum_value(document.failure_mode) or "",
+                    _enum_value(document.repair_target_layer) or "",
                 ),
             )
+
+    def _embed_existing_indexed_lessons(self) -> None:
+        provider = self.embedding_provider
+        vec_module = self._vec_module
+        if provider is None or vec_module is None:
+            return
+        rows = self.connection.execute(
+            """
+            SELECT rowid, lesson_version_id, origin_workspace_fingerprint, content,
+                   cause_layer, failure_mode, repair_target_layer
+            FROM indexed_lesson
+            ORDER BY rowid
+            """
+        ).fetchall()
+        if not rows:
+            return
+        vectors = provider.embed_documents([str(row["content"]) for row in rows])
+        if len(vectors) != len(rows):
+            raise RuntimeError("embedding provider returned an unexpected vector count")
+        serialize = vec_module.serialize_float32
+        for row, vector in zip(rows, vectors, strict=True):
+            self.connection.execute(
+                """
+                INSERT INTO lesson_vec(
+                    rowid, embedding, origin_workspace_fingerprint, lesson_version_id,
+                    cause_layer, failure_mode, repair_target_layer
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(row["rowid"]),
+                    serialize(vector),
+                    str(row["origin_workspace_fingerprint"]),
+                    str(row["lesson_version_id"]),
+                    row["cause_layer"] or "",
+                    row["failure_mode"] or "",
+                    row["repair_target_layer"] or "",
+                ),
+            )
+
+    def _upgrade_lexical_schema_v2_to_v3(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self.connection.execute("PRAGMA table_info(indexed_lesson)").fetchall()
+        }
+        for name in ("cause_layer", "failure_mode", "repair_target_layer"):
+            if name not in columns:
+                self.connection.execute(f"ALTER TABLE indexed_lesson ADD COLUMN {name} TEXT")
 
     def _delete_row(self, rowid: int) -> None:
         self.connection.execute("DELETE FROM lesson_fts WHERE rowid = ?", (rowid,))
@@ -411,6 +514,24 @@ def _fts_expression(value: str) -> str:
 
 def _embedding_profile(spec: EmbeddingSpec) -> str:
     return f"{spec.provider}:{spec.model}:{spec.revision}:{spec.dimensions}:{spec.distance}"
+
+
+def _causal_filter_sql(query: RecallQuery, *, table_alias: str) -> tuple[str, tuple[str, ...]]:
+    predicates: list[str] = []
+    parameters: list[str] = []
+    for column, value in (
+        ("cause_layer", query.cause_layer),
+        ("failure_mode", query.failure_mode),
+        ("repair_target_layer", query.repair_target_layer),
+    ):
+        if value is not None:
+            predicates.append(f"AND {table_alias}.{column} = ?")
+            parameters.append(value.value)
+    return "\n".join(predicates), tuple(parameters)
+
+
+def _enum_value(value: CauseLayer | FailureMode | None) -> str | None:
+    return None if value is None else value.value
 
 
 def _load_sqlite_vec(connection: sqlite3.Connection) -> ModuleType:

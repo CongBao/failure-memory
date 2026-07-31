@@ -30,12 +30,27 @@ class HostState:
     installed_identities: tuple[str, ...] = ()
 
     @property
+    def installed_matches_desired(self) -> bool:
+        if self.installed_versions == (self.desired_version,):
+            return True
+        if (
+            self.target == "codex"
+            and "+codex." not in self.desired_version
+            and len(self.installed_versions) == 1
+        ):
+            installed_base, separator, _cachebuster = self.installed_versions[0].partition(
+                "+codex."
+            )
+            return bool(separator) and installed_base == self.desired_version
+        return False
+
+    @property
     def action(self) -> str:
         if len(self.installed_versions) > 1:
             return "conflict"
-        if not self.managed_projection and self.installed_versions != (self.desired_version,):
+        if not self.managed_projection and not self.installed_matches_desired:
             return "conflict"
-        if self.installed_versions != (self.desired_version,):
+        if not self.installed_matches_desired:
             return "install" if not self.installed_versions else "update"
         if (
             self.target in {"copilot", "cursor"}
@@ -44,7 +59,7 @@ class HostState:
             and self.installed_build_commit != self.desired_build_commit
         ):
             return "update"
-        if self.installed_versions == (self.desired_version,):
+        if self.installed_matches_desired:
             return "noop"
         raise AssertionError("unreachable host state")
 
@@ -99,6 +114,13 @@ def _manifest_version(bundle: Path, target: str) -> str:
     if value.get("name") != PLUGIN_NAME or not isinstance(value.get("version"), str):
         raise ValueError(f"invalid {target} plugin manifest")
     return str(value["version"])
+
+
+def _desired_version(bundle: Path) -> str:
+    versions = {_manifest_version(bundle, target) for target in SUPPORTED_TARGETS}
+    if len(versions) != 1:
+        raise ValueError("all harness manifests must publish the same plugin version")
+    return versions.pop()
 
 
 def _build_commit(root: Path) -> str | None:
@@ -279,6 +301,45 @@ def _state(bundle: Path, target: str) -> HostState:
     )
 
 
+def _installed_states(bundle: Path) -> tuple[HostState, ...]:
+    states: list[HostState] = []
+    for target, executable_name in (
+        ("codex", "codex"),
+        ("claude-code", "claude"),
+        ("copilot", "copilot"),
+    ):
+        if shutil.which(executable_name) is not None:
+            states.append(_state(bundle, target))
+    cursor_root = _cursor_install_root()
+    if cursor_root.exists() or cursor_root.is_symlink():
+        states.append(_cursor_state(bundle))
+    return tuple(states)
+
+
+def _enforce_shared_store_version_safety(
+    bundle: Path,
+    selected_targets: set[str],
+) -> None:
+    _desired_version(bundle)
+    conflicts = [
+        state
+        for state in _installed_states(bundle)
+        if state.target not in selected_targets
+        and state.installed_versions
+        and not state.installed_matches_desired
+    ]
+    if not conflicts:
+        return
+    details = ", ".join(
+        f"{state.target}={','.join(state.installed_versions)}" for state in conflicts
+    )
+    missing = " ".join(f"--target {state.target}" for state in conflicts)
+    raise RuntimeError(
+        "shared-store version skew detected in installed Failure Memory projections "
+        f"({details}); update them together by adding {missing}"
+    )
+
+
 def _apply(bundle: Path, state: HostState) -> None:
     if state.action == "noop":
         return
@@ -399,8 +460,11 @@ def _global_store(bundle: Path) -> str:
 def main() -> int:
     arguments = _parser().parse_args()
     bundle = arguments.bundle.expanduser().resolve(strict=True)
-    states = [_state(bundle, target) for target in dict.fromkeys(arguments.target)]
+    targets = tuple(dict.fromkeys(arguments.target))
+    _desired_version(bundle)
+    states = [_state(bundle, target) for target in targets]
     if arguments.apply:
+        _enforce_shared_store_version_safety(bundle, set(targets))
         for state in states:
             _apply(bundle, state)
         states = [_state(bundle, state.target) for state in states]

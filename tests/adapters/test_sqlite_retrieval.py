@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from failure_memory.adapters.retrieval.sqlite import SQLiteRetrievalIndex
+from failure_memory.domain.causal import CauseLayer, FailureMode
 from failure_memory.domain.records import LessonDraft, LessonState, LessonVersionRecord
 from failure_memory.domain.retrieval import (
     EmbeddingSpec,
@@ -51,6 +53,9 @@ def _document(
     rule: str,
     invariant: str,
     cause: str,
+    cause_layer: CauseLayer | None = None,
+    failure_mode: FailureMode | None = None,
+    repair_target_layer: CauseLayer | None = None,
 ) -> RetrievalDocument:
     lesson = LessonVersionRecord(
         id=identifier,
@@ -76,6 +81,9 @@ def _document(
         outcome_summary=f"Observed outcome for {title}",
         material_impact="Material delay.",
         recurrence_risk="Can recur.",
+        cause_layer=cause_layer,
+        failure_mode=failure_mode,
+        repair_target_layer=repair_target_layer,
     )
 
 
@@ -171,6 +179,103 @@ def test_sqlite_vec_runs_exact_cosine_knn_and_hybrid_channels(tmp_path: Path) ->
         (pair.left_lesson_version_id, pair.right_lesson_version_id, pair.distance) for pair in pairs
     ] == [("lv-migration", "lv-schema-copy", pytest.approx(0.0))]
     index.close()
+
+
+def test_causal_filters_are_applied_inside_lexical_and_vector_search(tmp_path: Path) -> None:
+    pytest.importorskip("sqlite_vec")
+    index = SQLiteRetrievalIndex(
+        tmp_path / "causal-filters.sqlite3",
+        embedding_provider=_FakeEmbeddingProvider(),
+    )
+    documents = [
+        _document(
+            "lv-external",
+            workspace="workspace-a",
+            title="Run schema migration preflight",
+            rule="Validate schema compatibility before migration writes.",
+            invariant="Migration writes preserve the schema contract.",
+            cause="The external service was unavailable.",
+            cause_layer=CauseLayer.EXTERNAL_DEPENDENCY,
+            failure_mode=FailureMode.UNKNOWN,
+            repair_target_layer=CauseLayer.EXTERNAL_DEPENDENCY,
+        ),
+        _document(
+            "lv-skill",
+            workspace="workspace-a",
+            title="Run schema migration preflight",
+            rule="Validate schema compatibility before migration writes.",
+            invariant="Migration writes preserve the schema contract.",
+            cause="The skill instruction was ambiguous.",
+            cause_layer=CauseLayer.SKILL_INSTRUCTION,
+            failure_mode=FailureMode.AMBIGUOUS,
+            repair_target_layer=CauseLayer.SKILL_INSTRUCTION,
+        ),
+    ]
+    index.sync(documents)
+    query = RecallQuery(
+        mode=RecallMode.HYBRID,
+        text="Deploy a database schema migration.",
+        cause_layer=CauseLayer.SKILL_INSTRUCTION,
+        failure_mode=FailureMode.AMBIGUOUS,
+        repair_target_layer=CauseLayer.SKILL_INSTRUCTION,
+    )
+
+    assert [match.lesson_version_id for match in index.search_lexical(query, limit=1)] == [
+        "lv-skill"
+    ]
+    assert [match.lesson_version_id for match in index.search_semantic(query, limit=1)] == [
+        "lv-skill"
+    ]
+    index.close()
+
+
+def test_version_two_index_is_upgraded_and_vectors_are_rebuilt(tmp_path: Path) -> None:
+    sqlite_vec = pytest.importorskip("sqlite_vec")
+    database = tmp_path / "upgraded.sqlite3"
+    document = _document(
+        "lv-skill",
+        workspace="workspace-a",
+        title="Run schema migration preflight",
+        rule="Validate schema compatibility before migration writes.",
+        invariant="Migration writes preserve the schema contract.",
+        cause="The skill instruction was ambiguous.",
+        cause_layer=CauseLayer.SKILL_INSTRUCTION,
+        failure_mode=FailureMode.AMBIGUOUS,
+        repair_target_layer=CauseLayer.SKILL_INSTRUCTION,
+    )
+    current = SQLiteRetrievalIndex(database, embedding_provider=_FakeEmbeddingProvider())
+    current.sync([document])
+    current.close()
+
+    connection = sqlite3.connect(database)
+    connection.enable_load_extension(True)
+    sqlite_vec.load(connection)
+    connection.enable_load_extension(False)
+    connection.execute("UPDATE retrieval_metadata SET value = '2' WHERE key = 'schema_version'")
+    connection.execute("DROP TABLE lesson_vec")
+    connection.execute(
+        """
+        CREATE VIRTUAL TABLE lesson_vec USING vec0(
+            embedding float[3] distance_metric=cosine,
+            origin_workspace_fingerprint text,
+            lesson_version_id text
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    upgraded = SQLiteRetrievalIndex(database, embedding_provider=_FakeEmbeddingProvider())
+    query = RecallQuery(
+        mode=RecallMode.SEMANTIC,
+        text="Deploy a database schema migration.",
+        cause_layer=CauseLayer.SKILL_INSTRUCTION,
+    )
+
+    assert [match.lesson_version_id for match in upgraded.search_semantic(query, limit=1)] == [
+        document.lesson_version.id
+    ]
+    upgraded.close()
 
 
 def test_embedding_profile_mismatch_requires_a_separate_index(tmp_path: Path) -> None:

@@ -7,6 +7,24 @@ use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Evidence-bounded causal assessments with one primary factor, contributing factors,
+  portable component references, and proposed repair recommendations.
+- Append-only repair outcome history and causal coverage, layer, application,
+  effectiveness, and recurrence metrics.
+- Structured causal fields in lexical/vector documents, recall results, and recall
+  filters.
+- Prompt-submission failure checks for Codex and Claude Code that inject bounded static
+  guidance without retaining user prompts.
+- Shared-store migration capability markers and multi-harness installer protection
+  against omitted outdated projections.
+
+### Changed
+
+- The public recording workflow is now `evaluate → diagnose → review → record`.
+- The MCP surface now contains twenty-one schema-validated operations.
+
 ## [0.5.0] - 2026-07-31
 
 ### Added

@@ -322,8 +322,10 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
     tool_names = [tool["name"] for tool in responses[1]["result"]["tools"]]
     assert tool_names == [
         "evaluate_failure_candidate",
+        "diagnose_failure_cause",
         "review_failure_recording",
         "record_failure_incident",
+        "record_failure_repair_outcome",
         "find_related_failures",
         "recall_failure_lessons",
         "record_recall_outcome",
@@ -341,7 +343,7 @@ def test_packaged_launcher_completes_strict_mcp_handshake(tmp_path: Path) -> Non
         "failure_memory_setup_status",
         "failure_memory_doctor",
     ]
-    assert len(tool_names) == len(set(tool_names)) == 19
+    assert len(tool_names) == len(set(tool_names)) == 21
     doctor = responses[2]["result"]["structuredContent"]
     assert doctor["state"] == "lexical_ready"
     assert doctor["integrity_check"] == "ok"

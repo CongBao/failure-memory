@@ -32,8 +32,10 @@ _COMMAND_TO_TOOL = {
     "recall-metrics": "get_failure_recall_metrics",
     "learning-metrics": "get_failure_learning_metrics",
     "evaluate": "evaluate_failure_candidate",
+    "diagnose": "diagnose_failure_cause",
     "review": "review_failure_recording",
     "record": "record_failure_incident",
+    "repair-feedback": "record_failure_repair_outcome",
     "recall": "recall_failure_lessons",
     "feedback": "record_recall_outcome",
 }
@@ -60,7 +62,15 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("metrics", help="return append-ledger record counts")
     subparsers.add_parser("recall-metrics", help="return recall telemetry record counts")
     subparsers.add_parser("learning-metrics", help="return measured recall quality")
-    for command in ("evaluate", "review", "record", "recall", "feedback"):
+    for command in (
+        "evaluate",
+        "diagnose",
+        "review",
+        "record",
+        "repair-feedback",
+        "recall",
+        "feedback",
+    ):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument(
             "--input",
@@ -250,7 +260,15 @@ def _run(
         _emit(payload, stdout)
         return 0
     tool_arguments: Mapping[str, object]
-    if command in {"evaluate", "review", "record", "recall", "feedback"}:
+    if command in {
+        "evaluate",
+        "diagnose",
+        "review",
+        "record",
+        "repair-feedback",
+        "recall",
+        "feedback",
+    }:
         tool_arguments = _read_input(cast(str, arguments.input), stdin)
     else:
         tool_arguments = {}

@@ -32,7 +32,7 @@ def close_migration_test_connections(
 
 def test_initial_migration_creates_core_tables_and_is_idempotent(tmp_path: Path) -> None:
     connection = connect_sqlite(tmp_path / "failure-memory.sqlite3")
-    assert apply_migrations(connection) == (1, 2, 3, 4, 5, 6)
+    assert apply_migrations(connection) == (1, 2, 3, 4, 5, 6, 7)
     assert apply_migrations(connection) == ()
     tables = {
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -53,6 +53,13 @@ def test_initial_migration_creates_core_tables_and_is_idempotent(tmp_path: Path)
         "learning_evaluation_run",
         "adapter_profile",
         "adapter_health_event",
+        "store_schema_capability",
+        "failure_causal_assessment",
+        "failure_causal_factor",
+        "failure_repair_recommendation",
+        "failure_causal_review_relation",
+        "failure_causal_incident_relation",
+        "failure_repair_outcome_event",
     } <= tables
 
 
@@ -88,7 +95,7 @@ def test_pending_migration_retries_busy_transaction_without_partial_schema(
         "_migration_files",
         lambda: [
             *migrations,
-            (7, "0007_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
+            (8, "0008_pending.sql", "CREATE TABLE pending_migration (id INTEGER) STRICT;"),
         ],
     )
     writer.execute("PRAGMA busy_timeout = 1")
@@ -109,7 +116,7 @@ def test_pending_migration_retries_busy_transaction_without_partial_schema(
         is None
     )
     assert (
-        writer.execute("SELECT version FROM schema_migration WHERE version = 7").fetchone() is None
+        writer.execute("SELECT version FROM schema_migration WHERE version = 8").fetchone() is None
     )
     writer.close()
 
@@ -320,6 +327,32 @@ def test_migration_rejects_versions_unknown_to_the_current_package(
         connection.close()
 
 
+def test_migration_accepts_declared_future_additive_schema_for_current_writer(
+    tmp_path: Path,
+) -> None:
+    connection = connect_sqlite(tmp_path / "failure-memory.sqlite3")
+    try:
+        apply_migrations(connection)
+        connection.execute(
+            """
+            INSERT INTO store_schema_capability(
+                migration_version, schema_kind, minimum_reader_migration,
+                minimum_writer_migration, description
+            ) VALUES (8, 'additive', 7, 7, 'Test-only future additive schema.')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO schema_migration(version, name, checksum, applied_at)
+            VALUES (8, '0008_future.sql', 'future-checksum', '2026-07-30T00:00:00Z')
+            """
+        )
+
+        assert apply_migrations(connection) == ()
+    finally:
+        connection.close()
+
+
 def test_lesson_head_rejects_a_version_owned_by_a_different_lesson(tmp_path: Path) -> None:
     connection = connect_sqlite(tmp_path / "failure-memory.sqlite3")
     apply_migrations(connection)
@@ -391,9 +424,9 @@ def test_concurrent_initial_migration_is_applied_once(
         allow_first_migration.set()
         results = [first.result(), second.result()]
 
-    assert sorted(results) == [(), (1, 2, 3, 4, 5, 6)]
+    assert sorted(results) == [(), (1, 2, 3, 4, 5, 6, 7)]
     connection = connect_sqlite(database_path)
-    assert connection.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 6
+    assert connection.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 7
     assert (
         connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'capture_attempt'"

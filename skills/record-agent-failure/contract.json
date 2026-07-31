@@ -1,5 +1,5 @@
 {
-  "contract_version": 3,
+  "contract_version": 4,
   "policy_kind": "record_failure",
   "skill": {
     "name": "record-agent-failure",
@@ -65,13 +65,16 @@
     },
     "tools": {
       "evaluate": "evaluate_failure_candidate",
+      "diagnose": "diagnose_failure_cause",
       "review": "review_failure_recording",
-      "record": "record_failure_incident"
+      "record": "record_failure_incident",
+      "repair_outcome": "record_failure_repair_outcome"
     },
     "workflow": {
       "entry": "classify",
       "tool_order": [
         "evaluate_failure_candidate",
+        "diagnose_failure_cause",
         "review_failure_recording",
         "record_failure_incident"
       ],
@@ -83,10 +86,16 @@
           "condition": "always"
         },
         {
-          "id": "evaluate_accept_to_review",
+          "id": "evaluate_accept_to_diagnose",
           "from": "evaluate",
-          "to": "review",
+          "to": "diagnose",
           "condition": "decision == accept"
+        },
+        {
+          "id": "diagnose_to_review",
+          "from": "diagnose",
+          "to": "review",
+          "condition": "causal_assessment_recorded"
         },
         {
           "id": "review_to_record",
@@ -141,7 +150,7 @@
       "shared_topic_converts_new_work": false,
       "urgency_converts_new_work": false,
       "authority_converts_new_work": false,
-      "intended_call_format": "evaluate_then_review_then_record_only_if_accept_otherwise_no_write",
+      "intended_call_format": "evaluate_then_diagnose_then_review_then_record_only_if_accept_otherwise_no_write",
       "unconditioned_record_listing_allowed": false
     },
     "accepted_capture": {
@@ -152,6 +161,47 @@
       "source_portion": "accepted_failure_portion",
       "record_capture_id_state": "accepted",
       "record_drafts_sanitized": true
+    },
+    "causal_diagnosis": {
+      "required_before_review": true,
+      "evidence_bounded": true,
+      "primary_factor_count": 1,
+      "maximum_factors": 4,
+      "maximum_recommendations": 3,
+      "unknown_allowed": true,
+      "prefer_most_specific_inspectable_layer": true,
+      "component_reference_format": "portable_namespaced",
+      "layers": [
+        "skill_instruction",
+        "agent_instruction",
+        "project_instruction",
+        "system_instruction",
+        "hook_policy",
+        "plugin_manifest",
+        "tool_contract",
+        "application_logic",
+        "adapter_runtime",
+        "schema_migration",
+        "test_evaluation_gap",
+        "harness_limitation",
+        "model_behavior",
+        "external_dependency",
+        "unknown"
+      ],
+      "failure_modes": [
+        "missing",
+        "ambiguous",
+        "conflicting",
+        "not_loaded",
+        "not_triggered",
+        "ignored",
+        "incorrectly_implemented",
+        "insufficient_validation",
+        "uninspectable",
+        "unknown"
+      ],
+      "recommendation_role": "proposed_repair",
+      "automatic_edit": false
     },
     "generalization_review": {
       "required_before_record": true,
@@ -174,6 +224,19 @@
       ],
       "cite_returned_identifiers": true,
       "allow_verified_description": false
+    },
+    "repair_feedback": {
+      "only_after_observable_outcome": true,
+      "do_not_invent": true,
+      "allowed_outcomes": [
+        "applied",
+        "rejected",
+        "partially_applied",
+        "verified_effective",
+        "verified_ineffective",
+        "recurrence_observed",
+        "superseded"
+      ]
     },
     "example": {
       "prior_invariant": "no_raw_prompts",

@@ -4,8 +4,8 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness copilot --event session-start",
-        "powershell": "python \"$env:CLAUDE_PLUGIN_ROOT\\scripts\\failure_memory_hook.py\" --harness copilot --event session-start",
+        "bash": "python3 \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness copilot --event session-start",
+        "powershell": "python \"${PLUGIN_ROOT}/scripts/failure_memory_hook.py\" --harness copilot --event session-start",
         "timeoutSec": 5
       }
     ]

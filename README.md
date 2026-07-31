@@ -11,8 +11,9 @@ It exists because **not every correction is a failure**. A user may be adding a 
 requirement, clarifying missing information, or changing a preference. Saving all of
 those as “lessons” creates noisy memory and makes the agent less reliable.
 
-Failure Memory records only durable lessons from real failures, recalls them before
-similar work, and learns whether each recall was useful.
+Failure Memory records only durable lessons from real failures, diagnoses where the
+failure came from, recalls lessons before similar work, and learns whether recalls and
+recommended repairs were useful.
 
 ## Why use it?
 
@@ -23,12 +24,16 @@ Without a deliberate failure-memory system, agents tend to:
 - save several copies of the same lesson;
 - recall loosely related advice without measuring whether it helped.
 
-Failure Memory adds two review gates:
+Failure Memory adds three gates:
 
 1. **Failure qualification** — was there an established expectation, an observable
    mismatch, meaningful impact or recurrence risk, a controllable cause, and a durable
    prevention lesson?
-2. **Generalization review** — should the incident reuse an existing lesson, support a
+2. **Causal diagnosis** — did the failure come from a missing, ambiguous, conflicting,
+   unloaded, ignored, or incorrectly implemented skill, agent instruction, project rule,
+   hook, tool contract, application, adapter, schema, test, harness, model, or external
+   dependency? If evidence cannot establish a cause, it remains explicitly unknown.
+3. **Generalization review** — should the incident reuse an existing lesson, support a
    broader version of one, or remain distinct?
 
 Similarity search suggests at most three related lessons. It never merges or promotes a
@@ -38,10 +43,10 @@ lesson automatically.
 
 | Agent or harness | Support | Installation |
 | --- | --- | --- |
-| OpenAI Codex | Plugin, skills, and MCP tools | Public GitHub marketplace |
-| Claude Code | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
-| GitHub Copilot CLI | Plugin, skills, hooks, and MCP tools | Public GitHub marketplace |
-| Cursor | Plugin, skills, hooks, and MCP tools | Local plugin or team marketplace |
+| OpenAI Codex | Plugin, skills, prompt/session hooks, and MCP tools | Public GitHub marketplace |
+| Claude Code | Plugin, skills, prompt/session hooks, and MCP tools | Public GitHub marketplace |
+| GitHub Copilot CLI | Plugin, skills, session hook, and MCP tools | Public GitHub marketplace |
+| Cursor | Plugin, skills, session hook, and MCP tools | Local plugin or team marketplace |
 | Other MCP clients | Core MCP tools | Configure the bundled stdio server manually |
 
 All supported harnesses use the same memory for the current OS user. Installing the
@@ -108,6 +113,8 @@ import this repository from **Dashboard → Plugins → Add Marketplace**.
 Repository checkouts and release bundles include an installer that inspects the stable
 plugin identity in each host before changing anything. It reports `install`, `update`,
 `noop`, or `conflict`; repeated targets are collapsed and a conflict is never overwritten.
+Because all hosts share one schema, an apply also stops if an installed but omitted host
+has an older Failure Memory version.
 
 Preview changes:
 
@@ -177,7 +184,23 @@ The evaluation distinguishes:
 Rejected and deferred evaluations remain auditable, but they do not become incidents or
 lessons.
 
-### 3. Review and record the lesson
+### 3. Diagnose the root cause
+
+For an accepted failure, the agent records an evidence-bounded causal assessment before
+searching for related lessons:
+
+```text
+Find the root cause of this accepted failure. Identify the most specific inspectable
+skill, agent instruction, project rule, system instruction, hook, tool contract,
+application, adapter, schema, test, harness, model, or external dependency involved.
+Recommend where to fix it and how to verify the repair. Do not guess.
+```
+
+Each assessment has exactly one primary factor, up to three contributing factors, and
+one to three proposed repairs. Component references are portable names such as
+`skill:record-agent-failure` or `hook:user-prompt-submit`, never private absolute paths.
+
+### 4. Review and record the lesson
 
 If the evaluation is accepted, ask the agent to complete the second review:
 
@@ -195,7 +218,7 @@ Record the reviewed failure and proposed prevention lesson.
 The plugin stores immutable incidents and versioned lessons. Existing history is
 preserved rather than overwritten.
 
-### 4. Give feedback on recalled lessons
+### 5. Give feedback on recalls and repairs
 
 Recall feedback is important because it tells the memory which lessons actually help:
 
@@ -210,7 +233,17 @@ That lesson was a false positive for this task. Record that outcome.
 Failure Memory stores append-only recall attempts, candidates, selections, outcomes,
 false positives, and missed-relevant feedback. It does not store raw recall prompts.
 
-### 5. Review broader lesson proposals
+You can also report what happened to a proposed root-cause repair:
+
+```text
+The recommended hook change was applied and verified effective. Record that repair
+outcome with the evidence.
+```
+
+Repair history is append-only and distinguishes applied, rejected, partially applied,
+verified effective, verified ineffective, recurrence observed, and superseded outcomes.
+
+### 6. Review broader lesson proposals
 
 Semantic clustering only proposes groups; it cannot merge lessons. A proposal becomes
 eligible for the weak cluster recall channel only after an append-only human or agent
@@ -243,7 +276,7 @@ proposal retains its original supporting lesson-version IDs. An accepted review 
 include one broader **proposed** lesson; source lessons and incidents stay unchanged. A
 terminal accept or reject cannot be rewritten.
 
-### 6. Run the offline learning evaluation
+### 7. Run the offline learning evaluation
 
 The release includes a synthetic corpus that checks failure qualification, exact,
 lexical, semantic, hybrid, reviewed-cluster, and negative no-injection behavior. Run it
@@ -257,7 +290,7 @@ Reports are written under the private Failure Memory data root, not the reposito
 passing report is evidence only: its state remains `shadow` and it never activates
 production feedback ranking.
 
-### 7. Check health and learning metrics
+### 8. Check health and learning metrics
 
 Example prompts:
 
@@ -273,7 +306,8 @@ Show recall feedback coverage, usefulness, false-positive, and missed-relevant m
 
 Exact signature and SQLite FTS5 lexical search work without third-party dependencies.
 Optional semantic search uses local `sqlite-vec` and FastEmbed, and hybrid search fuses
-lexical and vector rankings.
+lexical and vector rankings. Root-cause layer, failure mode, and repair-target layer are
+included in indexed lesson text and can also be used as exact structured recall filters.
 
 Semantic dependencies and the embedding model are installed only after explicit
 approval:
@@ -283,6 +317,14 @@ uv run failure-memory adapters plan
 uv run failure-memory adapters install
 uv run failure-memory index build
 ```
+
+## Prompt hooks
+
+Codex and Claude Code run a bounded `UserPromptSubmit` hook that reminds the model to
+check whether a correction is evidence of a prior failure or merely new information. The
+hook emits static guidance only: it does not echo, write, embed, or retain the submitted
+prompt. Copilot CLI and Cursor currently use session-start guidance because their prompt
+hook outputs do not provide the same safe model-context contract.
 
 ## Local data and privacy
 

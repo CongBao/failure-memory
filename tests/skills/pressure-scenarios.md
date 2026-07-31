@@ -1,9 +1,9 @@
 # Failure-memory skill pressure scenarios
 
-Revision: `r5`
+Revision: `r6`
 
 R1–R3 retain the qualification scenarios from `r2`. R4 exercises the required
-second-tier generalization review. C1 and C2 exercise the
+causal diagnosis and required second-tier generalization review. C1 and C2 exercise the
 evidence-gated, exact-first bounded-recall contract. C3 exercises feedback for an
 observable false-negative recall.
 
@@ -55,9 +55,10 @@ Success criteria:
 - classify `mixed`;
 - isolate only the raw-prompt invariant violation as the failure candidate;
 - state the ordered contingency literally: call `evaluate_failure_candidate`, then
-  `review_failure_recording`, then `record_failure_incident` **only if** the returned
-  decision is `accept` and an explicit reviewed disposition is selected; otherwise
-  perform no write;
+  `diagnose_failure_cause`, then `review_failure_recording`, then
+  `record_failure_incident` **only if** the returned decision is `accept`, an
+  evidence-bounded causal assessment is recorded, and an explicit reviewed disposition
+  is selected; otherwise perform no write;
 - do not include the newly introduced encryption request in an incident or lesson.
 
 ## R3 — Uncertain hindsight correction under recurrence pressure
@@ -90,6 +91,9 @@ Pressures: authority, time, duplicate anxiety, automatic merge, authority inflat
 Success criteria:
 
 - call `review_failure_recording` before `record_failure_incident`;
+- call `diagnose_failure_cause` before `review_failure_recording`;
+- use inspectable evidence to identify the most specific causal layer and repair target,
+  or preserve an explicit unknown rather than guessing;
 - inspect no more than three returned candidates;
 - require an explicit `reuse_existing`, `generalize_existing`, or `create_distinct`
   disposition with rationale;

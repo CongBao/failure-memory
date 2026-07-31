@@ -12,6 +12,19 @@ from failure_memory.application.errors import (
 )
 from failure_memory.application.service import FailureMemoryService
 from failure_memory.domain.capture import Classification, ExpectationSource, FailureCandidate
+from failure_memory.domain.causal import (
+    CausalAssessmentDraft,
+    CausalAssessmentRecord,
+    CausalAssessmentState,
+    CausalConfidence,
+    CausalFactorDraft,
+    CausalFactorRole,
+    CauseLayer,
+    FailureMode,
+    RepairOutcome,
+    RepairOutcomeKind,
+    RepairRecommendationDraft,
+)
 from failure_memory.domain.learning import (
     GeneralizationProposalDecision,
     GeneralizedLessonDraft,
@@ -68,6 +81,9 @@ _RECALL_KEYS = {
     "controllable_cause",
     "prevention_action",
     "component",
+    "cause_layer",
+    "failure_mode",
+    "repair_target_layer",
     "top_k",
 }
 _OUTCOME_KEYS = {
@@ -104,7 +120,9 @@ def dispatch_tool(
     """Validate one public operation, invoke the service, and serialize a MCP tool result."""
     if name not in {
         "evaluate_failure_candidate",
+        "diagnose_failure_cause",
         "record_failure_incident",
+        "record_failure_repair_outcome",
         "review_failure_recording",
         "find_related_failures",
         "recall_failure_lessons",
@@ -129,8 +147,12 @@ def dispatch_tool(
             raise BoundaryValidationError("arguments must be an object")
         if name == "evaluate_failure_candidate":
             return _evaluate(arguments, service)
+        if name == "diagnose_failure_cause":
+            return _diagnose_cause(arguments, service)
         if name == "record_failure_incident":
             return _record(arguments, service)
+        if name == "record_failure_repair_outcome":
+            return _record_repair_outcome(arguments, service)
         if name == "review_failure_recording":
             return _review_recording(arguments, service)
         if name == "find_related_failures":
@@ -240,9 +262,155 @@ def _evaluate(arguments: Mapping[str, object], service: FailureMemoryService) ->
     return _success(payload, f"Failure candidate {assessment.decision.value}.")
 
 
+def _diagnose_cause(
+    arguments: Mapping[str, object],
+    service: FailureMemoryService,
+) -> dict[str, object]:
+    allowed = {
+        "capture_attempt_id",
+        "state",
+        "unknown_reason",
+        "factors",
+        "recommendations",
+    }
+    required = allowed - {"unknown_reason"}
+    _validate_object(arguments, required, allowed, "arguments")
+    factor_values = _require_object_array(arguments, "factors", minimum=1, maximum=4)
+    recommendation_values = _require_object_array(
+        arguments,
+        "recommendations",
+        minimum=1,
+        maximum=3,
+    )
+    factors: list[CausalFactorDraft] = []
+    factor_keys = {
+        "role",
+        "layer",
+        "failure_mode",
+        "component_reference",
+        "evidence_summary",
+        "confidence",
+    }
+    for index, factor in enumerate(factor_values):
+        _validate_object(factor, factor_keys, factor_keys, f"factors[{index}]")
+        factors.append(
+            CausalFactorDraft(
+                role=_parse_enum(
+                    CausalFactorRole,
+                    _require_string(factor, "role"),
+                    f"factors[{index}].role",
+                ),
+                layer=_parse_enum(
+                    CauseLayer,
+                    _require_string(factor, "layer"),
+                    f"factors[{index}].layer",
+                ),
+                failure_mode=_parse_enum(
+                    FailureMode,
+                    _require_string(factor, "failure_mode"),
+                    f"factors[{index}].failure_mode",
+                ),
+                component_reference=_require_string(factor, "component_reference"),
+                evidence_summary=_require_string(factor, "evidence_summary"),
+                confidence=_parse_enum(
+                    CausalConfidence,
+                    _require_string(factor, "confidence"),
+                    f"factors[{index}].confidence",
+                ),
+            )
+        )
+    recommendations: list[RepairRecommendationDraft] = []
+    recommendation_keys = {
+        "target_layer",
+        "target_reference",
+        "recommended_change",
+        "verification_action",
+        "rationale",
+        "confidence",
+    }
+    for index, recommendation in enumerate(recommendation_values):
+        _validate_object(
+            recommendation,
+            recommendation_keys,
+            recommendation_keys,
+            f"recommendations[{index}]",
+        )
+        recommendations.append(
+            RepairRecommendationDraft(
+                target_layer=_parse_enum(
+                    CauseLayer,
+                    _require_string(recommendation, "target_layer"),
+                    f"recommendations[{index}].target_layer",
+                ),
+                target_reference=_require_string(recommendation, "target_reference"),
+                recommended_change=_require_string(recommendation, "recommended_change"),
+                verification_action=_require_string(recommendation, "verification_action"),
+                rationale=_require_string(recommendation, "rationale"),
+                confidence=_parse_enum(
+                    CausalConfidence,
+                    _require_string(recommendation, "confidence"),
+                    f"recommendations[{index}].confidence",
+                ),
+            )
+        )
+    assessment = service.diagnose_failure_cause(
+        _require_string(arguments, "capture_attempt_id"),
+        CausalAssessmentDraft(
+            state=_parse_enum(
+                CausalAssessmentState,
+                _require_string(arguments, "state"),
+                "state",
+            ),
+            factors=tuple(factors),
+            recommendations=tuple(recommendations),
+            unknown_reason=_optional_string(arguments, "unknown_reason"),
+        ),
+    )
+    return _success(
+        _causal_assessment_payload(assessment),
+        "Failure root cause and repair recommendations recorded.",
+    )
+
+
+def _record_repair_outcome(
+    arguments: Mapping[str, object],
+    service: FailureMemoryService,
+) -> dict[str, object]:
+    keys = {
+        "recommendation_id",
+        "outcome",
+        "detail_code",
+        "evidence_summary",
+        "confidence",
+    }
+    _validate_object(arguments, keys, keys, "arguments")
+    outcome_id = service.record_failure_repair_outcome(
+        RepairOutcome(
+            recommendation_id=_require_string(arguments, "recommendation_id"),
+            outcome=_parse_enum(
+                RepairOutcomeKind,
+                _require_string(arguments, "outcome"),
+                "outcome",
+            ),
+            detail_code=_require_string(arguments, "detail_code"),
+            evidence_summary=_require_string(arguments, "evidence_summary"),
+            confidence=_parse_enum(
+                CausalConfidence,
+                _require_string(arguments, "confidence"),
+                "confidence",
+            ),
+        )
+    )
+    return _success(
+        {"repair_outcome_event_id": outcome_id},
+        "Failure repair outcome recorded.",
+    )
+
+
 def _record(arguments: Mapping[str, object], service: FailureMemoryService) -> dict[str, object]:
     record_keys = {
         "capture_attempt_id",
+        "causal_assessment_id",
         "generalization_review_id",
         "disposition",
         "target_lesson_version_id",
@@ -286,6 +454,7 @@ def _record(arguments: Mapping[str, object], service: FailureMemoryService) -> d
         disposition=disposition,
         target_lesson_version_id=_optional_string(arguments, "target_lesson_version_id"),
         rationale_code=_require_string(arguments, "rationale_code"),
+        causal_assessment_id=_require_string(arguments, "causal_assessment_id"),
     )
     return _success(
         {
@@ -303,7 +472,7 @@ def _record(arguments: Mapping[str, object], service: FailureMemoryService) -> d
 def _review_recording(
     arguments: Mapping[str, object], service: FailureMemoryService
 ) -> dict[str, object]:
-    review_keys = {"capture_attempt_id", "incident", "lesson"}
+    review_keys = {"capture_attempt_id", "causal_assessment_id", "incident", "lesson"}
     _validate_object(arguments, review_keys, review_keys, "arguments")
     incident_arguments = _require_object(arguments, "incident")
     lesson_arguments = _require_object(arguments, "lesson")
@@ -327,7 +496,10 @@ def _review_recording(
     return _success(
         dict(
             service.review_failure_recording(
-                _require_string(arguments, "capture_attempt_id"), incident, lesson
+                _require_string(arguments, "capture_attempt_id"),
+                incident,
+                lesson,
+                causal_assessment_id=_require_string(arguments, "causal_assessment_id"),
             )
         ),
         "Failure recording generalization review completed.",
@@ -366,6 +538,9 @@ def _recall(
             controllable_cause=_optional_string(arguments, "controllable_cause"),
             prevention_action=_optional_string(arguments, "prevention_action"),
             component=_optional_string(arguments, "component"),
+            cause_layer=_optional_cause_layer(arguments, "cause_layer"),
+            failure_mode=_optional_failure_mode(arguments, "failure_mode"),
+            repair_target_layer=_optional_cause_layer(arguments, "repair_target_layer"),
             top_k=_optional_int(arguments, "top_k", default=3, minimum=1, maximum=5),
         )
     )
@@ -558,6 +733,49 @@ def _lesson_payload(lesson: LessonVersionRecord) -> dict[str, object]:
     }
 
 
+def _causal_assessment_payload(
+    assessment: CausalAssessmentRecord,
+) -> dict[str, object]:
+    return {
+        "causal_assessment_id": assessment.id,
+        "capture_attempt_id": assessment.capture_attempt_id,
+        "state": assessment.draft.state.value,
+        "unknown_reason": assessment.draft.unknown_reason,
+        "factors": [
+            {
+                "factor_id": factor_id,
+                "role": factor.role.value,
+                "layer": factor.layer.value,
+                "failure_mode": factor.failure_mode.value,
+                "component_reference": factor.component_reference,
+                "evidence_summary": factor.evidence_summary,
+                "confidence": factor.confidence.value,
+            }
+            for factor_id, factor in zip(
+                assessment.factor_ids,
+                assessment.draft.factors,
+                strict=True,
+            )
+        ],
+        "recommendations": [
+            {
+                "recommendation_id": recommendation_id,
+                "target_layer": recommendation.target_layer.value,
+                "target_reference": recommendation.target_reference,
+                "recommended_change": recommendation.recommended_change,
+                "verification_action": recommendation.verification_action,
+                "rationale": recommendation.rationale,
+                "confidence": recommendation.confidence.value,
+            }
+            for recommendation_id, recommendation in zip(
+                assessment.recommendation_ids,
+                assessment.draft.recommendations,
+                strict=True,
+            )
+        ],
+    }
+
+
 def _recall_candidate_payload(candidate: RecallCandidate) -> dict[str, object]:
     return {
         "lesson": _lesson_payload(candidate.lesson),
@@ -572,6 +790,11 @@ def _recall_candidate_payload(candidate: RecallCandidate) -> dict[str, object]:
         "lexical_rank": candidate.lexical_rank,
         "semantic_rank": candidate.semantic_rank,
         "vector_distance": candidate.vector_distance,
+        "cause_layer": (None if candidate.cause_layer is None else candidate.cause_layer.value),
+        "failure_mode": (None if candidate.failure_mode is None else candidate.failure_mode.value),
+        "repair_target_layer": (
+            None if candidate.repair_target_layer is None else candidate.repair_target_layer.value
+        ),
         "cluster_review_id": candidate.cluster_review_id,
         "cluster_key": candidate.cluster_key,
         "cluster_supporting_lesson_version_ids": list(
@@ -596,6 +819,23 @@ def _require_object(arguments: Mapping[str, object], key: str) -> Mapping[str, o
     if not isinstance(value, Mapping):
         raise BoundaryValidationError(f"{key} must be an object")
     return value
+
+
+def _require_object_array(
+    arguments: Mapping[str, object],
+    key: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> tuple[Mapping[str, object], ...]:
+    value = arguments.get(key)
+    if not isinstance(value, list) or not minimum <= len(value) <= maximum:
+        raise BoundaryValidationError(
+            f"{key} must be an array with between {minimum} and {maximum} items"
+        )
+    if not all(isinstance(item, Mapping) for item in value):
+        raise BoundaryValidationError(f"{key} items must be objects")
+    return tuple(value)
 
 
 def _require_string(arguments: Mapping[str, object], key: str) -> str:
@@ -678,6 +918,33 @@ def _parse_expectation_source(value: str) -> ExpectationSource:
         return ExpectationSource(value)
     except ValueError as exc:
         raise BoundaryValidationError(f"expectation_source has invalid value: {value}") from exc
+
+
+def _parse_enum[EnumT](
+    enum_type: type[EnumT],
+    value: str,
+    label: str,
+) -> EnumT:
+    try:
+        return enum_type(value)  # type: ignore[call-arg]
+    except ValueError as exc:
+        raise BoundaryValidationError(f"{label} has invalid value: {value}") from exc
+
+
+def _optional_cause_layer(
+    arguments: Mapping[str, object],
+    key: str,
+) -> CauseLayer | None:
+    value = _optional_string(arguments, key)
+    return None if value is None else _parse_enum(CauseLayer, value, key)
+
+
+def _optional_failure_mode(
+    arguments: Mapping[str, object],
+    key: str,
+) -> FailureMode | None:
+    value = _optional_string(arguments, key)
+    return None if value is None else _parse_enum(FailureMode, value, key)
 
 
 def _success(payload: dict[str, object], summary: str) -> dict[str, object]:

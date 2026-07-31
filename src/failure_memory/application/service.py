@@ -31,6 +31,13 @@ from failure_memory.adapters.storage_permissions import ensure_private_tree
 from failure_memory.application.errors import SemanticSetupRequiredError, StorageBusyError
 from failure_memory.application.redaction import RedactionResult, redact_text
 from failure_memory.domain.capture import CaptureAssessment, FailureCandidate
+from failure_memory.domain.causal import (
+    CausalAssessmentDraft,
+    CausalAssessmentRecord,
+    CausalFactorDraft,
+    RepairOutcome,
+    RepairRecommendationDraft,
+)
 from failure_memory.domain.learning import (
     GeneralizationProposalDecision,
     GeneralizationRecommendation,
@@ -124,6 +131,7 @@ class FailureMemoryService:
         disposition: RecordingDisposition | None = None,
         target_lesson_version_id: str | None = None,
         rationale_code: str | None = None,
+        causal_assessment_id: str | None = None,
     ) -> RecordResult:
         safe_incident, incident_results = _redact_incident(incident)
         safe_lesson, lesson_results = _redact_lesson(lesson)
@@ -138,6 +146,7 @@ class FailureMemoryService:
             disposition=disposition,
             target_lesson_version_id=target_lesson_version_id,
             rationale_code=rationale_code,
+            causal_assessment_id=causal_assessment_id,
         )
         with suppress(Exception):
             self.build_index()
@@ -148,9 +157,28 @@ class FailureMemoryService:
         capture_attempt_id: str,
         incident: IncidentDraft,
         lesson: LessonDraft,
+        *,
+        causal_assessment_id: str | None = None,
     ) -> Mapping[str, object]:
         safe_incident, incident_results = _redact_incident(incident)
         safe_lesson, lesson_results = _redact_lesson(lesson)
+        causal_assessment = (
+            None
+            if causal_assessment_id is None
+            else self.store.get_causal_assessment(causal_assessment_id)
+        )
+        primary_factor = (
+            None
+            if causal_assessment is None
+            else next(
+                factor
+                for factor in causal_assessment.draft.factors
+                if factor.role.value == "primary"
+            )
+        )
+        primary_recommendation = (
+            None if causal_assessment is None else causal_assessment.draft.recommendations[0]
+        )
         signature = lesson_signature(
             safe_incident.expected_invariant,
             safe_incident.controllable_cause,
@@ -184,6 +212,11 @@ class FailureMemoryService:
                     channels=("exact",),
                     score=1.0,
                     exact=True,
+                    cause_layer=None if document is None else document.cause_layer,
+                    failure_mode=None if document is None else document.failure_mode,
+                    repair_target_layer=(
+                        None if document is None else document.repair_target_layer
+                    ),
                 ),
             )
             recommendation = GeneralizationRecommendation.REUSE_EXACT
@@ -208,6 +241,11 @@ class FailureMemoryService:
                 expected_invariant=safe_incident.expected_invariant,
                 controllable_cause=safe_incident.controllable_cause,
                 prevention_action=safe_lesson.prevention_action,
+                cause_layer=None if primary_factor is None else primary_factor.layer,
+                failure_mode=(None if primary_factor is None else primary_factor.failure_mode),
+                repair_target_layer=(
+                    None if primary_recommendation is None else primary_recommendation.target_layer
+                ),
             )
             lexical = tuple(retrieval.search_lexical(query, limit=10))
             semantic: tuple[RetrievalMatch, ...] = ()
@@ -233,6 +271,7 @@ class FailureMemoryService:
             self.context,
             created_at=self.clock(),
             redaction_state=_redaction_state(*incident_results, *lesson_results),
+            causal_assessment_id=causal_assessment_id,
         )
         return {
             "review_id": review.id,
@@ -251,6 +290,17 @@ class FailureMemoryService:
                     "counterexamples": candidate.lesson.draft.counterexamples,
                     "expected_invariant": candidate.expected_invariant,
                     "controllable_cause": candidate.controllable_cause,
+                    "cause_layer": (
+                        None if candidate.cause_layer is None else candidate.cause_layer.value
+                    ),
+                    "failure_mode": (
+                        None if candidate.failure_mode is None else candidate.failure_mode.value
+                    ),
+                    "repair_target_layer": (
+                        None
+                        if candidate.repair_target_layer is None
+                        else candidate.repair_target_layer.value
+                    ),
                     "channels": list(candidate.channels),
                     "score": candidate.score,
                     "exact": candidate.exact,
@@ -259,6 +309,30 @@ class FailureMemoryService:
                 for candidate in candidates
             ],
         }
+
+    def diagnose_failure_cause(
+        self,
+        capture_attempt_id: str,
+        assessment: CausalAssessmentDraft,
+    ) -> CausalAssessmentRecord:
+        safe_assessment, redaction_results = _redact_causal_assessment(assessment)
+        return self.store.append_causal_assessment(
+            capture_attempt_id,
+            safe_assessment,
+            self.context,
+            created_at=self.clock(),
+            redaction_state=_redaction_state(*redaction_results),
+        )
+
+    def record_failure_repair_outcome(self, outcome: RepairOutcome) -> str:
+        evidence = redact_text(outcome.evidence_summary)
+        safe_outcome = replace(outcome, evidence_summary=evidence.text)
+        return self.store.append_repair_outcome(
+            safe_outcome,
+            self.context,
+            created_at=self.clock(),
+            redaction_state=_redaction_state(evidence),
+        )
 
     def find_related_failures(
         self,
@@ -394,6 +468,11 @@ class FailureMemoryService:
             self.store.list_accepted_lesson_clusters(),
             document_by_id,
             limit=search_limit,
+        )
+        ranked_candidates = tuple(
+            candidate
+            for candidate in ranked_candidates
+            if _matches_causal_filters(candidate, safe_query)
         )
         candidates = ranked_candidates[: safe_query.top_k]
         status = (
@@ -698,12 +777,23 @@ class FailureMemoryService:
             "recall_telemetry",
             "learning_metrics",
             "tier_two_generalization_review",
+            "evidence_bounded_causal_diagnosis",
+            "repair_recommendation_telemetry",
+            "causal_recall_filters",
             "generalization_proposal_review",
             "reviewed_cluster_recall",
             "offline_shadow_evaluation",
         ]
-        available.append("bounded_session_hook")
-        unavailable = ["production_feedback_ranking"]
+        available.extend(
+            [
+                "bounded_session_hook",
+                "codex_claude_prompt_failure_check_hook",
+            ]
+        )
+        unavailable = [
+            "production_feedback_ranking",
+            "copilot_cursor_prompt_context_hook",
+        ]
         if retrieval_status is not None and retrieval_status.lexical_available:
             available.append("fts5_recall")
         else:
@@ -808,7 +898,7 @@ class FailureMemoryService:
         if lesson is None:
             return None
         document = documents.get(lesson.id)
-        return RecallCandidate(
+        candidate = RecallCandidate(
             lesson=lesson,
             expected_invariant=(
                 query.expected_invariant if document is None else document.expected_invariant
@@ -820,7 +910,11 @@ class FailureMemoryService:
             channels=("exact",),
             score=1.0,
             exact=True,
+            cause_layer=None if document is None else document.cause_layer,
+            failure_mode=None if document is None else document.failure_mode,
+            repair_target_layer=None if document is None else document.repair_target_layer,
         )
+        return candidate if _matches_causal_filters(candidate, query) else None
 
     def _record_recall(
         self,
@@ -942,6 +1036,61 @@ def _redact_lesson(lesson: LessonDraft) -> tuple[LessonDraft, tuple[RedactionRes
     return _redact_draft(lesson)
 
 
+def _redact_causal_assessment(
+    assessment: CausalAssessmentDraft,
+) -> tuple[CausalAssessmentDraft, tuple[RedactionResult, ...]]:
+    results: list[RedactionResult] = []
+    factors: list[CausalFactorDraft] = []
+    for factor in assessment.factors:
+        component_reference = redact_text(factor.component_reference)
+        evidence_summary = redact_text(factor.evidence_summary)
+        results.extend((component_reference, evidence_summary))
+        factors.append(
+            replace(
+                factor,
+                component_reference=component_reference.text,
+                evidence_summary=evidence_summary.text,
+            )
+        )
+    recommendations: list[RepairRecommendationDraft] = []
+    for recommendation in assessment.recommendations:
+        target_reference = redact_text(recommendation.target_reference)
+        recommended_change = redact_text(recommendation.recommended_change)
+        verification_action = redact_text(recommendation.verification_action)
+        rationale = redact_text(recommendation.rationale)
+        results.extend(
+            (
+                target_reference,
+                recommended_change,
+                verification_action,
+                rationale,
+            )
+        )
+        recommendations.append(
+            replace(
+                recommendation,
+                target_reference=target_reference.text,
+                recommended_change=recommended_change.text,
+                verification_action=verification_action.text,
+                rationale=rationale.text,
+            )
+        )
+    unknown_reason = (
+        None if assessment.unknown_reason is None else redact_text(assessment.unknown_reason)
+    )
+    if unknown_reason is not None:
+        results.append(unknown_reason)
+    return (
+        replace(
+            assessment,
+            factors=tuple(factors),
+            recommendations=tuple(recommendations),
+            unknown_reason=None if unknown_reason is None else unknown_reason.text,
+        ),
+        tuple(results),
+    )
+
+
 def _redact_draft[DraftT: (IncidentDraft, LessonDraft)](
     draft: DraftT,
 ) -> tuple[DraftT, tuple[RedactionResult, ...]]:
@@ -1031,6 +1180,9 @@ def _fuse_matches(
                 lexical_rank=None if lexical_match is None else lexical_match.rank,
                 semantic_rank=None if semantic_match is None else semantic_match.rank,
                 vector_distance=(None if semantic_match is None else semantic_match.distance),
+                cause_layer=document.cause_layer,
+                failure_mode=document.failure_mode,
+                repair_target_layer=document.repair_target_layer,
             )
         )
         if len(candidates) == limit:
@@ -1081,6 +1233,9 @@ def _expand_reviewed_clusters(
                 channels=("cluster",),
                 score=max(seed_scores) * 0.25,
                 exact=False,
+                cause_layer=document.cause_layer,
+                failure_mode=document.failure_mode,
+                repair_target_layer=document.repair_target_layer,
                 cluster_review_id=cluster.review_id,
                 cluster_key=cluster.cluster_key,
                 cluster_supporting_lesson_version_ids=tuple(
@@ -1093,6 +1248,17 @@ def _expand_reviewed_clusters(
             break
     additions.sort(key=lambda candidate: (-candidate.score, candidate.lesson.id))
     return (*ranked_candidates, *additions)[:limit]
+
+
+def _matches_causal_filters(candidate: RecallCandidate, query: RecallQuery) -> bool:
+    return (
+        (query.cause_layer is None or candidate.cause_layer is query.cause_layer)
+        and (query.failure_mode is None or candidate.failure_mode is query.failure_mode)
+        and (
+            query.repair_target_layer is None
+            or candidate.repair_target_layer is query.repair_target_layer
+        )
+    )
 
 
 def _retrieval_status_payload(index: RetrievalIndexPort) -> dict[str, object]:

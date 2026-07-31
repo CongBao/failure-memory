@@ -17,8 +17,10 @@ def test_tools_publish_the_public_operations() -> None:
     """Would fail if a public operation were renamed, omitted, or added."""
     expected = (
         "evaluate_failure_candidate",
+        "diagnose_failure_cause",
         "review_failure_recording",
         "record_failure_incident",
+        "record_failure_repair_outcome",
         "find_related_failures",
         "recall_failure_lessons",
         "record_recall_outcome",
@@ -37,7 +39,7 @@ def test_tools_publish_the_public_operations() -> None:
         "failure_memory_doctor",
     )
 
-    assert len(TOOLS) == 19
+    assert len(TOOLS) == 21
     assert tuple(tool.name for tool in TOOLS) == expected
     assert {tool.name for tool in TOOLS} == set(expected)
 
@@ -66,8 +68,10 @@ def test_all_tools_publish_object_schemas_and_safe_annotations() -> None:
     """Would fail if clients could not discover a complete, non-destructive tool contract."""
     writes = {
         "evaluate_failure_candidate",
+        "diagnose_failure_cause",
         "review_failure_recording",
         "record_failure_incident",
+        "record_failure_repair_outcome",
         "recall_failure_lessons",
         "record_recall_outcome",
         "build_failure_memory_index",
@@ -193,6 +197,7 @@ def test_record_schema_rejects_undeclared_nested_fields() -> None:
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {
         "capture_attempt_id",
+        "causal_assessment_id",
         "generalization_review_id",
         "disposition",
         "rationale_code",

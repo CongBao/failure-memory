@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
+from failure_memory.domain.causal import CauseLayer, FailureMode
 from failure_memory.domain.records import LessonVersionRecord
 
 
@@ -58,6 +59,9 @@ class RecallQuery:
     controllable_cause: str | None = None
     prevention_action: str | None = None
     component: str | None = None
+    cause_layer: CauseLayer | None = None
+    failure_mode: FailureMode | None = None
+    repair_target_layer: CauseLayer | None = None
     top_k: int = 3
 
     def __post_init__(self) -> None:
@@ -71,6 +75,9 @@ class RecallQuery:
                 self.controllable_cause,
                 self.prevention_action,
                 self.component,
+                self.cause_layer,
+                self.failure_mode,
+                self.repair_target_layer,
             )
         ):
             raise ValueError("recall query must contain at least one non-empty field")
@@ -96,6 +103,9 @@ class RecallQuery:
                 self.controllable_cause,
                 self.prevention_action,
                 self.component,
+                self.cause_layer,
+                self.failure_mode,
+                self.repair_target_layer,
             )
         )
         return has_context and has_discriminator
@@ -107,6 +117,18 @@ class RecallQuery:
             ("controllable cause", self.controllable_cause),
             ("prevention action", self.prevention_action),
             ("component", self.component),
+            (
+                "cause layer",
+                None if self.cause_layer is None else self.cause_layer.value,
+            ),
+            (
+                "failure mode",
+                None if self.failure_mode is None else self.failure_mode.value,
+            ),
+            (
+                "repair target layer",
+                (None if self.repair_target_layer is None else self.repair_target_layer.value),
+            ),
         )
         return "\n".join(
             f"{label}: {value.strip()}" for label, value in labelled if value and value.strip()
@@ -119,6 +141,18 @@ class RecallQuery:
             ("controllable_cause", self.controllable_cause),
             ("prevention_action", self.prevention_action),
             ("component", self.component),
+            (
+                "cause_layer",
+                None if self.cause_layer is None else self.cause_layer.value,
+            ),
+            (
+                "failure_mode",
+                None if self.failure_mode is None else self.failure_mode.value,
+            ),
+            (
+                "repair_target_layer",
+                (None if self.repair_target_layer is None else self.repair_target_layer.value),
+            ),
         )
         return tuple(name for name, value in values if value is not None and value.strip())
 
@@ -133,6 +167,9 @@ class RetrievalDocument:
     outcome_summary: str
     material_impact: str
     recurrence_risk: str
+    cause_layer: CauseLayer | None = None
+    failure_mode: FailureMode | None = None
+    repair_target_layer: CauseLayer | None = None
 
     def canonical_text(self) -> str:
         lesson = self.lesson_version.draft
@@ -148,8 +185,24 @@ class RetrievalDocument:
             ("counterexamples", lesson.counterexamples),
             ("material impact", self.material_impact),
             ("recurrence risk", self.recurrence_risk),
+            (
+                "cause layer",
+                None if self.cause_layer is None else self.cause_layer.value,
+            ),
+            (
+                "failure mode",
+                None if self.failure_mode is None else self.failure_mode.value,
+            ),
+            (
+                "repair target layer",
+                (None if self.repair_target_layer is None else self.repair_target_layer.value),
+            ),
         )
-        return "\n".join(f"{label}: {value.strip()}" for label, value in fields)
+        return "\n".join(
+            f"{label}: {value.strip()}"
+            for label, value in fields
+            if value is not None and value.strip()
+        )
 
     @property
     def content_hash(self) -> str:
@@ -196,6 +249,9 @@ class RecallCandidate:
     lexical_rank: int | None = None
     semantic_rank: int | None = None
     vector_distance: float | None = None
+    cause_layer: CauseLayer | None = None
+    failure_mode: FailureMode | None = None
+    repair_target_layer: CauseLayer | None = None
     cluster_review_id: str | None = None
     cluster_key: str | None = None
     cluster_supporting_lesson_version_ids: tuple[str, ...] = ()

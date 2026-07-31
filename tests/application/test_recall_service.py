@@ -17,6 +17,16 @@ from failure_memory.domain.capture import (
     ExpectationSource,
     FailureCandidate,
 )
+from failure_memory.domain.causal import (
+    CausalAssessmentDraft,
+    CausalAssessmentState,
+    CausalConfidence,
+    CausalFactorDraft,
+    CausalFactorRole,
+    CauseLayer,
+    FailureMode,
+    RepairRecommendationDraft,
+)
 from failure_memory.domain.learning import (
     GeneralizationProposalDecision,
     GeneralizedLessonDraft,
@@ -234,6 +244,79 @@ def test_hybrid_degrades_to_fts5_without_silent_adapter_install(
     assert [candidate.lesson.id for candidate in result.candidates] == [lesson_version_id]
     assert result.candidates[0].channels == ("lexical",)
     assert "not configured" in str(result.detail)
+
+
+def test_causal_layer_is_indexed_returned_and_available_as_a_structured_filter(
+    recall_service: FailureMemoryService,
+) -> None:
+    evaluated = recall_service.evaluate_failure_candidate(_candidate())
+    assessment = recall_service.diagnose_failure_cause(
+        evaluated.capture_attempt_id,
+        CausalAssessmentDraft(
+            state=CausalAssessmentState.SUPPORTED,
+            factors=(
+                CausalFactorDraft(
+                    role=CausalFactorRole.PRIMARY,
+                    layer=CauseLayer.SKILL_INSTRUCTION,
+                    failure_mode=FailureMode.AMBIGUOUS,
+                    component_reference="skill:migration-preflight",
+                    evidence_summary="The preflight instruction did not define ordering.",
+                    confidence=CausalConfidence.HIGH,
+                ),
+            ),
+            recommendations=(
+                RepairRecommendationDraft(
+                    target_layer=CauseLayer.SKILL_INSTRUCTION,
+                    target_reference="skill:migration-preflight",
+                    recommended_change="State the preflight order explicitly.",
+                    verification_action="Test a migration write without a preflight.",
+                    rationale="The instruction ambiguity allowed the skipped control.",
+                    confidence=CausalConfidence.HIGH,
+                ),
+            ),
+        ),
+    )
+    record = recall_service.record_failure_incident(
+        evaluated.capture_attempt_id,
+        IncidentDraft(
+            outcome_summary="The migration wrote incompatible rows.",
+            expected_invariant="Migration writes preserve the schema contract.",
+            controllable_cause="The required schema preflight was skipped.",
+            material_impact="The release was delayed.",
+            recurrence_risk="Future schema migrations can repeat the failure.",
+        ),
+        LessonDraft(
+            title="Run schema migration preflight",
+            rule="Validate compatibility before every schema migration write.",
+            prevention_action="Run the schema preflight before migration writes.",
+            verification_action="Confirm the schema preflight is clean.",
+            applicability="Schema-changing migrations.",
+            counterexamples="Read-only schema diagnostics.",
+        ),
+        causal_assessment_id=assessment.id,
+    )
+
+    matching = recall_service.recall_failure_lessons(
+        RecallQuery(
+            mode=RecallMode.LEXICAL,
+            text="schema migration preflight",
+            cause_layer=CauseLayer.SKILL_INSTRUCTION,
+        )
+    )
+    excluded = recall_service.recall_failure_lessons(
+        RecallQuery(
+            mode=RecallMode.LEXICAL,
+            text="schema migration preflight",
+            cause_layer=CauseLayer.EXTERNAL_DEPENDENCY,
+        )
+    )
+
+    assert [candidate.lesson.id for candidate in matching.candidates] == [record.lesson_version_id]
+    assert matching.candidates[0].cause_layer is CauseLayer.SKILL_INSTRUCTION
+    assert matching.candidates[0].failure_mode is FailureMode.AMBIGUOUS
+    assert matching.candidates[0].repair_target_layer is CauseLayer.SKILL_INSTRUCTION
+    assert excluded.status is RecallStatus.NO_MATCH
+    assert excluded.candidates == ()
 
 
 def test_semantic_only_returns_setup_required_without_downloading(

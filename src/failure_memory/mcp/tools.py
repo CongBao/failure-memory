@@ -11,6 +11,14 @@ from failure_memory.domain.capture import (
     ExpectationSource,
     ReasonCode,
 )
+from failure_memory.domain.causal import (
+    CausalAssessmentState,
+    CausalConfidence,
+    CausalFactorRole,
+    CauseLayer,
+    FailureMode,
+    RepairOutcomeKind,
+)
 from failure_memory.domain.learning import GeneralizationProposalDecision
 from failure_memory.domain.records import (
     IncidentLessonRelation,
@@ -23,6 +31,14 @@ from failure_memory.mcp.rfc3339 import RFC3339_DATE_TIME_PATTERN
 Schema = Mapping[str, object]
 
 _DRAFT_STRING: Final[Schema] = {"type": "string", "minLength": 1}
+_COMPONENT_REFERENCE: Final[Schema] = {
+    "type": "string",
+    "pattern": r"^[a-z][a-z0-9_-]{0,31}:[a-z0-9][a-z0-9_.:/-]{0,159}$",
+}
+_DETAIL_CODE: Final[Schema] = {
+    "type": "string",
+    "pattern": r"^[a-z0-9][a-z0-9_.-]{0,63}$",
+}
 _DATE_TIME: Final[Schema] = {
     "type": "string",
     "format": "date-time",
@@ -60,6 +76,39 @@ _LESSON_DRAFT_PROPERTIES: Final[Schema] = {
 }
 _INCIDENT_REQUIRED: Final[list[str]] = list(_INCIDENT_PROPERTIES)
 _LESSON_DRAFT_REQUIRED: Final[list[str]] = list(_LESSON_DRAFT_PROPERTIES)
+_CAUSE_LAYER: Final[Schema] = {
+    "type": "string",
+    "enum": [member.value for member in CauseLayer],
+}
+_FAILURE_MODE: Final[Schema] = {
+    "type": "string",
+    "enum": [member.value for member in FailureMode],
+}
+_CAUSAL_CONFIDENCE: Final[Schema] = {
+    "type": "string",
+    "enum": [member.value for member in CausalConfidence],
+}
+_CAUSAL_FACTOR_PROPERTIES: Final[Schema] = {
+    "role": {
+        "type": "string",
+        "enum": [member.value for member in CausalFactorRole],
+    },
+    "layer": _CAUSE_LAYER,
+    "failure_mode": _FAILURE_MODE,
+    "component_reference": _COMPONENT_REFERENCE,
+    "evidence_summary": _DRAFT_STRING,
+    "confidence": _CAUSAL_CONFIDENCE,
+}
+_CAUSAL_FACTOR_REQUIRED: Final[list[str]] = list(_CAUSAL_FACTOR_PROPERTIES)
+_REPAIR_RECOMMENDATION_PROPERTIES: Final[Schema] = {
+    "target_layer": _CAUSE_LAYER,
+    "target_reference": _COMPONENT_REFERENCE,
+    "recommended_change": _DRAFT_STRING,
+    "verification_action": _DRAFT_STRING,
+    "rationale": _DRAFT_STRING,
+    "confidence": _CAUSAL_CONFIDENCE,
+}
+_REPAIR_RECOMMENDATION_REQUIRED: Final[list[str]] = list(_REPAIR_RECOMMENDATION_PROPERTIES)
 
 
 def _object_schema(properties: Schema, required: list[str]) -> dict[str, object]:
@@ -228,6 +277,21 @@ def _learning_metrics_schema() -> Schema:
                 "type": "object",
                 "additionalProperties": {"type": "integer", "minimum": 0},
             },
+            "causal_assessment_count": {"type": "integer", "minimum": 0},
+            "causal_assessment_coverage": ratio,
+            "unknown_causal_assessment_count": {"type": "integer", "minimum": 0},
+            "unknown_causal_assessment_rate": ratio,
+            "causal_assessments_by_layer": {
+                "type": "object",
+                "additionalProperties": {"type": "integer", "minimum": 0},
+            },
+            "repair_recommendation_count": {"type": "integer", "minimum": 0},
+            "applied_recommendation_count": {"type": "integer", "minimum": 0},
+            "repair_application_rate": ratio,
+            "verified_effective_count": {"type": "integer", "minimum": 0},
+            "verified_ineffective_count": {"type": "integer", "minimum": 0},
+            "repair_effectiveness_rate": ratio,
+            "recurrence_after_repair_count": {"type": "integer", "minimum": 0},
         },
         [
             "scope",
@@ -246,6 +310,18 @@ def _learning_metrics_schema() -> Schema:
             "exact_reuse_count",
             "exact_reuse_rate",
             "attempts_by_harness",
+            "causal_assessment_count",
+            "causal_assessment_coverage",
+            "unknown_causal_assessment_count",
+            "unknown_causal_assessment_rate",
+            "causal_assessments_by_layer",
+            "repair_recommendation_count",
+            "applied_recommendation_count",
+            "repair_application_rate",
+            "verified_effective_count",
+            "verified_ineffective_count",
+            "repair_effectiveness_rate",
+            "recurrence_after_repair_count",
         ],
     )
 
@@ -330,6 +406,9 @@ def _recall_candidate_schema() -> Schema:
             "lexical_rank": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]},
             "semantic_rank": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]},
             "vector_distance": {"oneOf": [{"type": "null"}, {"type": "number"}]},
+            "cause_layer": {"oneOf": [{"type": "null"}, _CAUSE_LAYER]},
+            "failure_mode": {"oneOf": [{"type": "null"}, _FAILURE_MODE]},
+            "repair_target_layer": {"oneOf": [{"type": "null"}, _CAUSE_LAYER]},
             "cluster_review_id": {
                 "oneOf": [{"type": "null"}, _DRAFT_STRING],
             },
@@ -351,6 +430,9 @@ def _recall_candidate_schema() -> Schema:
             "lexical_rank",
             "semantic_rank",
             "vector_distance",
+            "cause_layer",
+            "failure_mode",
+            "repair_target_layer",
             "cluster_review_id",
             "cluster_key",
             "cluster_supporting_lesson_version_ids",
@@ -370,6 +452,9 @@ def _recall_input_schema() -> Schema:
             "controllable_cause": _DRAFT_STRING,
             "prevention_action": _DRAFT_STRING,
             "component": _DRAFT_STRING,
+            "cause_layer": _CAUSE_LAYER,
+            "failure_mode": _FAILURE_MODE,
+            "repair_target_layer": _CAUSE_LAYER,
             "top_k": {"type": "integer", "minimum": 1, "maximum": 5},
         },
         [],
@@ -386,6 +471,9 @@ def _recall_input_schema() -> Schema:
         {"required": ["text", "controllable_cause"]},
         {"required": ["text", "prevention_action"]},
         {"required": ["text", "component"]},
+        {"required": ["text", "cause_layer"]},
+        {"required": ["text", "failure_mode"]},
+        {"required": ["text", "repair_target_layer"]},
     ]
     return schema
 
@@ -438,6 +526,54 @@ def _generalized_lesson_input_schema() -> Schema:
             ),
         },
         ["expected_invariant", "controllable_cause", "lesson"],
+    )
+
+
+def _causal_assessment_output_schema() -> Schema:
+    factor = _object_schema(
+        {
+            "factor_id": _DRAFT_STRING,
+            **_CAUSAL_FACTOR_PROPERTIES,
+        },
+        ["factor_id", *_CAUSAL_FACTOR_REQUIRED],
+    )
+    recommendation = _object_schema(
+        {
+            "recommendation_id": _DRAFT_STRING,
+            **_REPAIR_RECOMMENDATION_PROPERTIES,
+        },
+        ["recommendation_id", *_REPAIR_RECOMMENDATION_REQUIRED],
+    )
+    return _object_schema(
+        {
+            "causal_assessment_id": _DRAFT_STRING,
+            "capture_attempt_id": _DRAFT_STRING,
+            "state": {
+                "type": "string",
+                "enum": [member.value for member in CausalAssessmentState],
+            },
+            "unknown_reason": {"oneOf": [{"type": "null"}, _DRAFT_STRING]},
+            "factors": {
+                "type": "array",
+                "items": factor,
+                "minItems": 1,
+                "maxItems": 4,
+            },
+            "recommendations": {
+                "type": "array",
+                "items": recommendation,
+                "minItems": 1,
+                "maxItems": 3,
+            },
+        },
+        [
+            "causal_assessment_id",
+            "capture_attempt_id",
+            "state",
+            "unknown_reason",
+            "factors",
+            "recommendations",
+        ],
     )
 
 
@@ -538,6 +674,46 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
         annotations=_annotations(read_only=False),
     ),
     ToolDefinition(
+        name="diagnose_failure_cause",
+        description=(
+            "Append an evidence-bounded causal assessment for an accepted failure before "
+            "deduplication. Identify the primary instruction, prompt, hook, tool, runtime, "
+            "application, or external layer and recommend where to repair it; use an "
+            "explicit unknown assessment when evidence is insufficient."
+        ),
+        input_schema=_object_schema(
+            {
+                "capture_attempt_id": _DRAFT_STRING,
+                "state": {
+                    "type": "string",
+                    "enum": [member.value for member in CausalAssessmentState],
+                },
+                "unknown_reason": _DRAFT_STRING,
+                "factors": {
+                    "type": "array",
+                    "items": _object_schema(
+                        _CAUSAL_FACTOR_PROPERTIES,
+                        _CAUSAL_FACTOR_REQUIRED,
+                    ),
+                    "minItems": 1,
+                    "maxItems": 4,
+                },
+                "recommendations": {
+                    "type": "array",
+                    "items": _object_schema(
+                        _REPAIR_RECOMMENDATION_PROPERTIES,
+                        _REPAIR_RECOMMENDATION_REQUIRED,
+                    ),
+                    "minItems": 1,
+                    "maxItems": 3,
+                },
+            },
+            ["capture_attempt_id", "state", "factors", "recommendations"],
+        ),
+        output_schema=_tool_output_schema(_causal_assessment_output_schema()),
+        annotations=_annotations(read_only=False, idempotent=False),
+    ),
+    ToolDefinition(
         name="review_failure_recording",
         description=(
             "Run the required second-tier exact and similarity review before recording "
@@ -546,10 +722,11 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
         input_schema=_object_schema(
             {
                 "capture_attempt_id": _DRAFT_STRING,
+                "causal_assessment_id": _DRAFT_STRING,
                 "incident": _object_schema(_INCIDENT_PROPERTIES, _INCIDENT_REQUIRED),
                 "lesson": _object_schema(_LESSON_DRAFT_PROPERTIES, _LESSON_DRAFT_REQUIRED),
             },
-            ["capture_attempt_id", "incident", "lesson"],
+            ["capture_attempt_id", "causal_assessment_id", "incident", "lesson"],
         ),
         output_schema=_tool_output_schema(
             _object_schema(
@@ -580,6 +757,9 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
                                 "counterexamples": _DRAFT_STRING,
                                 "expected_invariant": _DRAFT_STRING,
                                 "controllable_cause": _DRAFT_STRING,
+                                "cause_layer": {"oneOf": [{"type": "null"}, _CAUSE_LAYER]},
+                                "failure_mode": {"oneOf": [{"type": "null"}, _FAILURE_MODE]},
+                                "repair_target_layer": {"oneOf": [{"type": "null"}, _CAUSE_LAYER]},
                                 "channels": {
                                     "type": "array",
                                     "items": _DRAFT_STRING,
@@ -602,6 +782,9 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
                                 "counterexamples",
                                 "expected_invariant",
                                 "controllable_cause",
+                                "cause_layer",
+                                "failure_mode",
+                                "repair_target_layer",
                                 "channels",
                                 "score",
                                 "exact",
@@ -630,6 +813,7 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
         input_schema=_object_schema(
             {
                 "capture_attempt_id": _DRAFT_STRING,
+                "causal_assessment_id": _DRAFT_STRING,
                 "generalization_review_id": _DRAFT_STRING,
                 "disposition": {
                     "type": "string",
@@ -642,6 +826,7 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
             },
             [
                 "capture_attempt_id",
+                "causal_assessment_id",
                 "generalization_review_id",
                 "disposition",
                 "rationale_code",
@@ -651,6 +836,39 @@ TOOLS: Final[tuple[ToolDefinition, ...]] = (
         ),
         output_schema=_tool_output_schema(_record_output_schema()),
         annotations=_annotations(read_only=False),
+    ),
+    ToolDefinition(
+        name="record_failure_repair_outcome",
+        description=(
+            "Append whether a recommended root-cause repair was applied, rejected, "
+            "verified, superseded, or followed by recurrence."
+        ),
+        input_schema=_object_schema(
+            {
+                "recommendation_id": _DRAFT_STRING,
+                "outcome": {
+                    "type": "string",
+                    "enum": [member.value for member in RepairOutcomeKind],
+                },
+                "detail_code": _DETAIL_CODE,
+                "evidence_summary": _DRAFT_STRING,
+                "confidence": _CAUSAL_CONFIDENCE,
+            },
+            [
+                "recommendation_id",
+                "outcome",
+                "detail_code",
+                "evidence_summary",
+                "confidence",
+            ],
+        ),
+        output_schema=_tool_output_schema(
+            _object_schema(
+                {"repair_outcome_event_id": _DRAFT_STRING},
+                ["repair_outcome_event_id"],
+            )
+        ),
+        annotations=_annotations(read_only=False, idempotent=False),
     ),
     ToolDefinition(
         name="find_related_failures",

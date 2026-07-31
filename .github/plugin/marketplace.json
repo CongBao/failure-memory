@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "failure-memory",
-      "description": "Qualify real agent failures, preserve durable lessons locally, and recall recurrence-prevention guidance.",
+      "description": "Qualify real agent failures, diagnose root causes, preserve durable lessons locally, and recall recurrence-prevention guidance.",
       "source": {
         "source": "github",
         "repo": "CongBao/failure-memory",

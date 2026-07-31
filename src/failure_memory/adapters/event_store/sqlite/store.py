@@ -19,6 +19,18 @@ from failure_memory.domain.capture import (
     CaptureDecision,
     FailureCandidate,
 )
+from failure_memory.domain.causal import (
+    CausalAssessmentDraft,
+    CausalAssessmentRecord,
+    CausalAssessmentState,
+    CausalConfidence,
+    CausalFactorDraft,
+    CausalFactorRole,
+    CauseLayer,
+    FailureMode,
+    RepairOutcome,
+    RepairRecommendationDraft,
+)
 from failure_memory.domain.ids import new_id
 from failure_memory.domain.learning import (
     ClusterRunResult,
@@ -148,6 +160,220 @@ class SQLiteEventStore(EventStorePort):
             raise ValueError("capture attempt not found")
         return CaptureDecision(str(row["decision"]))
 
+    def append_causal_assessment(
+        self,
+        capture_attempt_id: str,
+        assessment: CausalAssessmentDraft,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> CausalAssessmentRecord:
+        assessment_id = new_id("cas")
+        factor_ids = tuple(new_id("caf") for _factor in assessment.factors)
+        recommendation_ids = tuple(new_id("rr") for _recommendation in assessment.recommendations)
+
+        def append() -> None:
+            if self.get_capture_decision(capture_attempt_id) is not CaptureDecision.ACCEPT:
+                raise ValueError("causal assessment requires an accepted capture")
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    """
+                    INSERT INTO failure_causal_assessment(
+                        id, schema_version, created_at, source_harness,
+                        workspace_fingerprint, session_fingerprint, provenance,
+                        redaction_state, capture_attempt_id, state, unknown_reason,
+                        policy_version
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'causal-v1')
+                    """,
+                    (
+                        assessment_id,
+                        _timestamp(created_at),
+                        context.harness,
+                        context.workspace_fingerprint,
+                        context.session_fingerprint,
+                        _PROVENANCE,
+                        redaction_state,
+                        capture_attempt_id,
+                        assessment.state.value,
+                        assessment.unknown_reason,
+                    ),
+                )
+                for ordinal, (factor_id, factor) in enumerate(
+                    zip(factor_ids, assessment.factors, strict=True),
+                    start=1,
+                ):
+                    self.connection.execute(
+                        """
+                        INSERT INTO failure_causal_factor(
+                            id, schema_version, created_at, assessment_id, ordinal,
+                            role, layer, failure_mode, component_reference,
+                            evidence_summary, confidence
+                        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            factor_id,
+                            _timestamp(created_at),
+                            assessment_id,
+                            ordinal,
+                            factor.role.value,
+                            factor.layer.value,
+                            factor.failure_mode.value,
+                            factor.component_reference.strip(),
+                            factor.evidence_summary,
+                            factor.confidence.value,
+                        ),
+                    )
+                for ordinal, (recommendation_id, recommendation) in enumerate(
+                    zip(recommendation_ids, assessment.recommendations, strict=True),
+                    start=1,
+                ):
+                    self.connection.execute(
+                        """
+                        INSERT INTO failure_repair_recommendation(
+                            id, schema_version, created_at, assessment_id, ordinal,
+                            target_layer, target_reference, recommended_change,
+                            verification_action, rationale, confidence
+                        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            recommendation_id,
+                            _timestamp(created_at),
+                            assessment_id,
+                            ordinal,
+                            recommendation.target_layer.value,
+                            recommendation.target_reference.strip(),
+                            recommendation.recommended_change,
+                            recommendation.verification_action,
+                            recommendation.rationale,
+                            recommendation.confidence.value,
+                        ),
+                    )
+                self.connection.execute("COMMIT")
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.execute("ROLLBACK")
+                raise
+
+        self._retry_busy_write(append)
+        return CausalAssessmentRecord(
+            id=assessment_id,
+            capture_attempt_id=capture_attempt_id,
+            created_at=created_at,
+            draft=assessment,
+            factor_ids=factor_ids,
+            recommendation_ids=recommendation_ids,
+        )
+
+    def get_causal_assessment(self, assessment_id: str) -> CausalAssessmentRecord:
+        row = self.connection.execute(
+            "SELECT * FROM failure_causal_assessment WHERE id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("causal assessment not found")
+        factor_rows = self.connection.execute(
+            """
+            SELECT * FROM failure_causal_factor
+            WHERE assessment_id = ?
+            ORDER BY ordinal
+            """,
+            (assessment_id,),
+        ).fetchall()
+        recommendation_rows = self.connection.execute(
+            """
+            SELECT * FROM failure_repair_recommendation
+            WHERE assessment_id = ?
+            ORDER BY ordinal
+            """,
+            (assessment_id,),
+        ).fetchall()
+        factors = tuple(
+            CausalFactorDraft(
+                role=CausalFactorRole(str(factor["role"])),
+                layer=CauseLayer(str(factor["layer"])),
+                failure_mode=FailureMode(str(factor["failure_mode"])),
+                component_reference=str(factor["component_reference"]),
+                evidence_summary=str(factor["evidence_summary"]),
+                confidence=CausalConfidence(str(factor["confidence"])),
+            )
+            for factor in factor_rows
+        )
+        recommendations = tuple(
+            RepairRecommendationDraft(
+                target_layer=CauseLayer(str(recommendation["target_layer"])),
+                target_reference=str(recommendation["target_reference"]),
+                recommended_change=str(recommendation["recommended_change"]),
+                verification_action=str(recommendation["verification_action"]),
+                rationale=str(recommendation["rationale"]),
+                confidence=CausalConfidence(str(recommendation["confidence"])),
+            )
+            for recommendation in recommendation_rows
+        )
+        return CausalAssessmentRecord(
+            id=assessment_id,
+            capture_attempt_id=str(row["capture_attempt_id"]),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            draft=CausalAssessmentDraft(
+                state=CausalAssessmentState(str(row["state"])),
+                factors=factors,
+                recommendations=recommendations,
+                unknown_reason=(
+                    None if row["unknown_reason"] is None else str(row["unknown_reason"])
+                ),
+            ),
+            factor_ids=tuple(str(factor["id"]) for factor in factor_rows),
+            recommendation_ids=tuple(
+                str(recommendation["id"]) for recommendation in recommendation_rows
+            ),
+        )
+
+    def append_repair_outcome(
+        self,
+        outcome: RepairOutcome,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> str:
+        outcome_id = new_id("roe")
+
+        def append() -> None:
+            recommendation = self.connection.execute(
+                "SELECT 1 FROM failure_repair_recommendation WHERE id = ?",
+                (outcome.recommendation_id,),
+            ).fetchone()
+            if recommendation is None:
+                raise ValueError("repair recommendation not found")
+            self.connection.execute(
+                """
+                INSERT INTO failure_repair_outcome_event(
+                    id, schema_version, created_at, source_harness,
+                    workspace_fingerprint, session_fingerprint, provenance,
+                    redaction_state, recommendation_id, outcome, detail_code,
+                    evidence_summary, confidence
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    outcome_id,
+                    _timestamp(created_at),
+                    context.harness,
+                    context.workspace_fingerprint,
+                    context.session_fingerprint,
+                    _PROVENANCE,
+                    redaction_state,
+                    outcome.recommendation_id,
+                    outcome.outcome.value,
+                    outcome.detail_code.strip(),
+                    outcome.evidence_summary,
+                    outcome.confidence.value,
+                ),
+            )
+
+        self._retry_busy_write(append)
+        return outcome_id
+
     def record_incident_and_lesson(
         self,
         capture_attempt_id: str,
@@ -161,6 +387,7 @@ class SQLiteEventStore(EventStorePort):
         disposition: RecordingDisposition | None = None,
         target_lesson_version_id: str | None = None,
         rationale_code: str | None = None,
+        causal_assessment_id: str | None = None,
     ) -> RecordResult:
         signature = lesson_signature(
             incident.expected_invariant,
@@ -183,6 +410,7 @@ class SQLiteEventStore(EventStorePort):
                 disposition=disposition,
                 target_lesson_version_id=target_lesson_version_id,
                 rationale_code=rationale_code,
+                causal_assessment_id=causal_assessment_id,
             )
 
         return self._retry_busy_write(record)
@@ -201,6 +429,7 @@ class SQLiteEventStore(EventStorePort):
         disposition: RecordingDisposition | None,
         target_lesson_version_id: str | None,
         rationale_code: str | None,
+        causal_assessment_id: str | None,
     ) -> RecordResult:
         try:
             self.connection.execute("BEGIN IMMEDIATE")
@@ -219,6 +448,24 @@ class SQLiteEventStore(EventStorePort):
                     target_lesson_version_id,
                     rationale_code,
                 )
+            assessment = (
+                None
+                if causal_assessment_id is None
+                else self.get_causal_assessment(causal_assessment_id)
+            )
+            if assessment is not None:
+                if assessment.capture_attempt_id != capture_attempt_id:
+                    raise ValueError("causal assessment belongs to another capture")
+                if review is not None:
+                    relation = self.connection.execute(
+                        """
+                        SELECT 1 FROM failure_causal_review_relation
+                        WHERE assessment_id = ? AND review_id = ?
+                        """,
+                        (assessment.id, review.id),
+                    ).fetchone()
+                    if relation is None:
+                        raise ValueError("causal assessment was not part of the review")
             incident_id = new_id("inc")
             self._insert_incident(
                 incident_id,
@@ -312,6 +559,20 @@ class SQLiteEventStore(EventStorePort):
                 created_at,
                 redaction_state,
             )
+            if assessment is not None:
+                self.connection.execute(
+                    """
+                    INSERT INTO failure_causal_incident_relation(
+                        id, schema_version, created_at, assessment_id, incident_id
+                    ) VALUES (?, 1, ?, ?, ?)
+                    """,
+                    (
+                        new_id("cir"),
+                        _timestamp(created_at),
+                        assessment.id,
+                        incident_id,
+                    ),
+                )
             decision_id: str | None = None
             if review is not None:
                 decision_id = new_id("fgd")
@@ -364,6 +625,7 @@ class SQLiteEventStore(EventStorePort):
         *,
         created_at: datetime,
         redaction_state: str,
+        causal_assessment_id: str | None = None,
     ) -> GeneralizationReview:
         if self.get_capture_decision(capture_attempt_id) is not CaptureDecision.ACCEPT:
             raise ValueError("capture attempt is not accepted")
@@ -378,6 +640,13 @@ class SQLiteEventStore(EventStorePort):
             raise ValueError("distinct review cannot include candidates")
         for candidate_id in candidate_ids:
             self._current_lesson_for_version(candidate_id)
+        assessment = (
+            None
+            if causal_assessment_id is None
+            else self.get_causal_assessment(causal_assessment_id)
+        )
+        if assessment is not None and assessment.capture_attempt_id != capture_attempt_id:
+            raise ValueError("causal assessment belongs to another capture")
         review = GeneralizationReview(
             id=new_id("fgr"),
             capture_attempt_id=capture_attempt_id,
@@ -388,31 +657,52 @@ class SQLiteEventStore(EventStorePort):
         )
 
         def append() -> None:
-            self.connection.execute(
-                """
-                INSERT INTO failure_generalization_review(
-                    id, schema_version, created_at, source_harness,
-                    workspace_fingerprint, session_fingerprint, provenance,
-                    redaction_state, capture_attempt_id, proposed_signature,
-                    recommendation, retrieval_profile,
-                    candidate_lesson_version_ids_json, automatic_merge
-                ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                """,
-                (
-                    review.id,
-                    _timestamp(created_at),
-                    context.harness,
-                    context.workspace_fingerprint,
-                    context.session_fingerprint,
-                    _PROVENANCE,
-                    redaction_state,
-                    capture_attempt_id,
-                    proposed_signature,
-                    recommendation.value,
-                    retrieval_profile,
-                    json.dumps(review.candidate_lesson_version_ids, separators=(",", ":")),
-                ),
-            )
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                self.connection.execute(
+                    """
+                    INSERT INTO failure_generalization_review(
+                        id, schema_version, created_at, source_harness,
+                        workspace_fingerprint, session_fingerprint, provenance,
+                        redaction_state, capture_attempt_id, proposed_signature,
+                        recommendation, retrieval_profile,
+                        candidate_lesson_version_ids_json, automatic_merge
+                    ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        review.id,
+                        _timestamp(created_at),
+                        context.harness,
+                        context.workspace_fingerprint,
+                        context.session_fingerprint,
+                        _PROVENANCE,
+                        redaction_state,
+                        capture_attempt_id,
+                        proposed_signature,
+                        recommendation.value,
+                        retrieval_profile,
+                        json.dumps(review.candidate_lesson_version_ids, separators=(",", ":")),
+                    ),
+                )
+                if assessment is not None:
+                    self.connection.execute(
+                        """
+                        INSERT INTO failure_causal_review_relation(
+                            id, schema_version, created_at, assessment_id, review_id
+                        ) VALUES (?, 1, ?, ?, ?)
+                        """,
+                        (
+                            new_id("crr"),
+                            _timestamp(created_at),
+                            assessment.id,
+                            review.id,
+                        ),
+                    )
+                self.connection.execute("COMMIT")
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.execute("ROLLBACK")
+                raise
 
         self._retry_busy_write(append)
         return review
@@ -562,7 +852,10 @@ class SQLiteEventStore(EventStorePort):
                    COALESCE(
                        incident.recurrence_risk,
                        'The generalized failure pattern can recur across its applicability.'
-                   ) AS recurrence_risk
+                   ) AS recurrence_risk,
+                   factor.layer AS cause_layer,
+                   factor.failure_mode AS failure_mode,
+                   recommendation.target_layer AS repair_target_layer
             FROM lesson_head AS head
             JOIN lesson_version AS version ON version.id = head.lesson_version_id
             LEFT JOIN incident_lesson_relation AS relation
@@ -572,6 +865,14 @@ class SQLiteEventStore(EventStorePort):
                   WHERE candidate.lesson_id = version.lesson_id
               )
             LEFT JOIN incident ON incident.id = relation.incident_id
+            LEFT JOIN failure_causal_incident_relation AS causal_relation
+              ON causal_relation.incident_id = incident.id
+            LEFT JOIN failure_causal_factor AS factor
+              ON factor.assessment_id = causal_relation.assessment_id
+             AND factor.role = 'primary'
+            LEFT JOIN failure_repair_recommendation AS recommendation
+              ON recommendation.assessment_id = causal_relation.assessment_id
+             AND recommendation.ordinal = 1
             LEFT JOIN lesson_generalization_proposal_review AS proposal_review
               ON proposal_review.resulting_lesson_version_id = version.id
              AND proposal_review.decision = 'accept'
@@ -923,6 +1224,67 @@ class SQLiteEventStore(EventStorePort):
             ORDER BY source_harness
             """
         ).fetchall()
+        accepted_capture_count = _scalar_count(
+            self.connection,
+            "SELECT COUNT(*) FROM capture_attempt WHERE decision = 'accept'",
+        )
+        causal_assessment_count = _scalar_count(
+            self.connection,
+            "SELECT COUNT(*) FROM failure_causal_assessment",
+        )
+        causally_assessed_capture_count = _scalar_count(
+            self.connection,
+            "SELECT COUNT(DISTINCT capture_attempt_id) FROM failure_causal_assessment",
+        )
+        unknown_causal_assessment_count = _scalar_count(
+            self.connection,
+            "SELECT COUNT(*) FROM failure_causal_assessment WHERE state = 'unknown'",
+        )
+        repair_recommendation_count = _scalar_count(
+            self.connection,
+            "SELECT COUNT(*) FROM failure_repair_recommendation",
+        )
+        applied_recommendation_count = _scalar_count(
+            self.connection,
+            """
+            SELECT COUNT(DISTINCT recommendation_id)
+            FROM failure_repair_outcome_event
+            WHERE outcome IN (
+                'applied', 'partially_applied', 'verified_effective',
+                'verified_ineffective', 'recurrence_observed'
+            )
+            """,
+        )
+        verified_effective_count = _scalar_count(
+            self.connection,
+            """
+            SELECT COUNT(*) FROM failure_repair_outcome_event
+            WHERE outcome = 'verified_effective'
+            """,
+        )
+        verified_ineffective_count = _scalar_count(
+            self.connection,
+            """
+            SELECT COUNT(*) FROM failure_repair_outcome_event
+            WHERE outcome = 'verified_ineffective'
+            """,
+        )
+        recurrence_after_repair_count = _scalar_count(
+            self.connection,
+            """
+            SELECT COUNT(*) FROM failure_repair_outcome_event
+            WHERE outcome = 'recurrence_observed'
+            """,
+        )
+        causal_layer_rows = self.connection.execute(
+            """
+            SELECT layer, COUNT(*) AS assessments
+            FROM failure_causal_factor
+            WHERE role = 'primary'
+            GROUP BY layer
+            ORDER BY layer
+            """
+        ).fetchall()
         return {
             "scope": "global_personal",
             "attempt_count": attempt_count,
@@ -944,6 +1306,32 @@ class SQLiteEventStore(EventStorePort):
             "attempts_by_harness": {
                 str(row["source_harness"]): int(row["attempts"]) for row in harness_rows
             },
+            "causal_assessment_count": causal_assessment_count,
+            "causal_assessment_coverage": _ratio(
+                causally_assessed_capture_count,
+                accepted_capture_count,
+            ),
+            "unknown_causal_assessment_count": unknown_causal_assessment_count,
+            "unknown_causal_assessment_rate": _ratio(
+                unknown_causal_assessment_count,
+                causal_assessment_count,
+            ),
+            "causal_assessments_by_layer": {
+                str(row["layer"]): int(row["assessments"]) for row in causal_layer_rows
+            },
+            "repair_recommendation_count": repair_recommendation_count,
+            "applied_recommendation_count": applied_recommendation_count,
+            "repair_application_rate": _ratio(
+                applied_recommendation_count,
+                repair_recommendation_count,
+            ),
+            "verified_effective_count": verified_effective_count,
+            "verified_ineffective_count": verified_ineffective_count,
+            "repair_effectiveness_rate": _ratio(
+                verified_effective_count,
+                verified_effective_count + verified_ineffective_count,
+            ),
+            "recurrence_after_repair_count": recurrence_after_repair_count,
         }
 
     def transition_lesson(
@@ -1905,4 +2293,13 @@ def _retrieval_document_from_row(row: sqlite3.Row) -> RetrievalDocument:
         outcome_summary=str(row["outcome_summary"]),
         material_impact=str(row["material_impact"]),
         recurrence_risk=str(row["recurrence_risk"]),
+        cause_layer=(None if row["cause_layer"] is None else CauseLayer(str(row["cause_layer"]))),
+        failure_mode=(
+            None if row["failure_mode"] is None else FailureMode(str(row["failure_mode"]))
+        ),
+        repair_target_layer=(
+            None
+            if row["repair_target_layer"] is None
+            else CauseLayer(str(row["repair_target_layer"]))
+        ),
     )

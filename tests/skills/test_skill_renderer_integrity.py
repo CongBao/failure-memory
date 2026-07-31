@@ -384,6 +384,14 @@ def test_contracts_represent_all_required_record_and_recall_rules() -> None:
         "cite_returned_identifiers": True,
         "allow_verified_description": False,
     }
+    assert record["causal_diagnosis"]["required_before_review"] is True
+    assert record["causal_diagnosis"]["primary_factor_count"] == 1
+    assert record["causal_diagnosis"]["maximum_factors"] == 4
+    assert record["causal_diagnosis"]["maximum_recommendations"] == 3
+    assert record["causal_diagnosis"]["unknown_allowed"] is True
+    assert record["causal_diagnosis"]["automatic_edit"] is False
+    assert record["repair_feedback"]["only_after_observable_outcome"] is True
+    assert record["repair_feedback"]["do_not_invent"] is True
     assert recall["evidence"] == {
         "context_field": "text",
         "discriminator_fields": [

@@ -5,15 +5,15 @@
   "renderer_digest_definition": "sha256 of exact tools/render_skills.py bytes",
   "pressure": {
     "scenarios_path": "tests/skills/pressure-scenarios.md",
-    "scenarios_sha256": "b225349d586e2e082cfe4f388b05772313cc0867d2511caf365859bd3ef85d07",
+    "scenarios_sha256": "6a398dc36020aba03aff97211bfb1436c894339bb5f9371617b0fbc23014a95b",
     "results_path": "tests/skills/pressure-results.md",
-    "results_sha256": "6f7983fb5ff54f552177784b13144b60052842529b1fcd15c69ba1928cd537c2"
+    "results_sha256": "43bc0ea36973af3bdadc2198c8773427d028ba6648a3de62331d8c22c960130e"
   },
   "skills": {
     "record-agent-failure": {
-      "policy_sha256": "bf7e5b9cb5abc09a27706a0ac8932f409d2c9b0fe62d6eb2b2ff605017380c94",
-      "behavior_sha256": "133ecf6544b28c1ba4fd2fe20b46d54407b1a9986929595f963cb83574fa8464",
-      "renderer_sha256": "1f13de2458b77e160e499097c60f26d317f8185eb680aba86e360dc11a4a4983",
+      "policy_sha256": "fe32e8bf557474681daebee1a9d2ee180f31bc37447f24713f9024620df67e94",
+      "behavior_sha256": "693a17816736906daa035691e5122bf80164c01ea3371a83f5b47485e96cc850",
+      "renderer_sha256": "ee5e51546267ac2c257983eea23b4e4ad685f8b6212ae21b4ed0f6b00ade4410",
       "pressure_families": [
         "R1",
         "R2",
@@ -27,15 +27,15 @@
       "adjudication": {
         "kind": "pressure_rerun",
         "basis": "fresh_forward_test",
-        "reviewed_against_commit": "0.4.0-forward-test-2026-07-30",
+        "reviewed_against_commit": "0.6.0-causal-forward-test-2026-07-31",
         "pressure_rerun": true
       },
-      "binding_sha256": "91e943d0f8c583f1ddb10e6a9d983c7376666a6c91afc45549b6c00e64e9e175"
+      "binding_sha256": "151807a9f7c8f7c03139afe81e7f306e78d845172dd9fe7f3f30b370298b5825"
     },
     "recall-failure-lessons": {
       "policy_sha256": "5f80d5f51a83bab13f2a447cd5a9521d82e9bbcf643fe1578a19e2441dfc4f36",
       "behavior_sha256": "0e4559348e76c7f7903233538306cc1aa618ce9b48d5c6cc07d9b9aeba67cec4",
-      "renderer_sha256": "1f13de2458b77e160e499097c60f26d317f8185eb680aba86e360dc11a4a4983",
+      "renderer_sha256": "ee5e51546267ac2c257983eea23b4e4ad685f8b6212ae21b4ed0f6b00ade4410",
       "pressure_families": [
         "C1",
         "C2",
@@ -51,7 +51,7 @@
         "reviewed_against_commit": "11593770aa0f37cec8efbce21cab3df7821f7ff9",
         "pressure_rerun": false
       },
-      "binding_sha256": "306285dee1df9b31d22dae929531c95ae08310ae53d3927373a6b3dbb667ef19"
+      "binding_sha256": "edf686a4b6c22d9cdadd831cdcee181b695c8716d351aa59347533b2db6553d7"
     }
   }
 }

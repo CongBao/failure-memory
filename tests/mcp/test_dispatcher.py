@@ -53,6 +53,7 @@ def _candidate(**changes: object) -> dict[str, object]:
 def _drafts(capture_attempt_id: str, **changes: object) -> dict[str, object]:
     arguments: dict[str, object] = {
         "capture_attempt_id": capture_attempt_id,
+        "causal_assessment_id": "cas_not_diagnosed",
         "generalization_review_id": "fgr_not_reviewed",
         "disposition": "create_distinct",
         "rationale_code": "test_rationale",
@@ -80,7 +81,42 @@ def _reviewed_drafts(
     service: FailureMemoryService, capture_attempt_id: str
 ) -> tuple[dict[str, object], dict[str, object]]:
     arguments = _drafts(capture_attempt_id)
-    review_input = {key: arguments[key] for key in ("capture_attempt_id", "incident", "lesson")}
+    diagnosis = dispatch_tool(
+        "diagnose_failure_cause",
+        {
+            "capture_attempt_id": capture_attempt_id,
+            "state": "supported",
+            "factors": [
+                {
+                    "role": "primary",
+                    "layer": "skill_instruction",
+                    "failure_mode": "ignored",
+                    "component_reference": "skill:migration-preflight",
+                    "evidence_summary": "The accepted preflight instruction was available.",
+                    "confidence": "high",
+                }
+            ],
+            "recommendations": [
+                {
+                    "target_layer": "skill_instruction",
+                    "target_reference": "skill:migration-preflight",
+                    "recommended_change": "Make the preflight a required first step.",
+                    "verification_action": "Run a fixture that omits the preflight.",
+                    "rationale": "The failure originated at the instruction boundary.",
+                    "confidence": "high",
+                }
+            ],
+        },
+        service,
+    )
+    _assert_envelope(diagnosis)
+    causal_assessment_id = diagnosis["structuredContent"]["causal_assessment_id"]
+    assert isinstance(causal_assessment_id, str)
+    arguments["causal_assessment_id"] = causal_assessment_id
+    review_input = {
+        key: arguments[key]
+        for key in ("capture_attempt_id", "causal_assessment_id", "incident", "lesson")
+    }
     review = dispatch_tool("review_failure_recording", review_input, service)
     _assert_envelope(review)
     review_id = review["structuredContent"]["review_id"]
@@ -120,6 +156,70 @@ def test_missing_candidate_field_is_an_invalid_arguments_result(
         "error": {"code": "invalid_arguments", "message": "summary is required"}
     }
     _assert_valid_tool_result("evaluate_failure_candidate", result)
+
+
+def test_accepted_failure_records_cause_repair_and_outcome_before_lesson_review(
+    service: FailureMemoryService,
+) -> None:
+    evaluated = dispatch_tool("evaluate_failure_candidate", _candidate(), service)
+    capture_attempt_id = evaluated["structuredContent"]["capture_attempt_id"]
+    assert isinstance(capture_attempt_id, str)
+    diagnosed = dispatch_tool(
+        "diagnose_failure_cause",
+        {
+            "capture_attempt_id": capture_attempt_id,
+            "state": "supported",
+            "factors": [
+                {
+                    "role": "primary",
+                    "layer": "hook_policy",
+                    "failure_mode": "not_triggered",
+                    "component_reference": "hook:user-prompt-submit",
+                    "evidence_summary": "Only a session-start hook was configured.",
+                    "confidence": "high",
+                }
+            ],
+            "recommendations": [
+                {
+                    "target_layer": "hook_policy",
+                    "target_reference": "hook:user-prompt-submit",
+                    "recommended_change": "Add a bounded prompt-submission context hook.",
+                    "verification_action": "Submit a correction and inspect injected context.",
+                    "rationale": "Prompt-time feedback needs a prompt-time trigger.",
+                    "confidence": "high",
+                }
+            ],
+        },
+        service,
+    )
+
+    _assert_envelope(diagnosed)
+    _assert_valid_tool_result("diagnose_failure_cause", diagnosed)
+    diagnosis_payload = diagnosed["structuredContent"]
+    causal_assessment_id = diagnosis_payload["causal_assessment_id"]
+    recommendation_id = diagnosis_payload["recommendations"][0]["recommendation_id"]
+    assert isinstance(causal_assessment_id, str)
+    assert isinstance(recommendation_id, str)
+
+    feedback = dispatch_tool(
+        "record_failure_repair_outcome",
+        {
+            "recommendation_id": recommendation_id,
+            "outcome": "applied",
+            "detail_code": "hook_added",
+            "evidence_summary": "The prompt hook is present in the host projection.",
+            "confidence": "high",
+        },
+        service,
+    )
+    _assert_envelope(feedback)
+    _assert_valid_tool_result("record_failure_repair_outcome", feedback)
+
+    metrics = dispatch_tool("get_failure_learning_metrics", {}, service)
+    assert metrics["structuredContent"]["causal_assessment_count"] == 1
+    assert metrics["structuredContent"]["causal_assessment_coverage"] == 1.0
+    assert metrics["structuredContent"]["repair_recommendation_count"] == 1
+    assert metrics["structuredContent"]["applied_recommendation_count"] == 1
 
 
 @pytest.mark.parametrize(

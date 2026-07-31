@@ -10,6 +10,11 @@ from failure_memory.domain.capture import (
     CaptureDecision,
     FailureCandidate,
 )
+from failure_memory.domain.causal import (
+    CausalAssessmentDraft,
+    CausalAssessmentRecord,
+    RepairOutcome,
+)
 from failure_memory.domain.learning import (
     ClusterRunResult,
     GeneralizationProposalDecision,
@@ -65,7 +70,29 @@ class EventStorePort(Protocol):
         disposition: RecordingDisposition | None = None,
         target_lesson_version_id: str | None = None,
         rationale_code: str | None = None,
+        causal_assessment_id: str | None = None,
     ) -> RecordResult: ...
+
+    def append_causal_assessment(
+        self,
+        capture_attempt_id: str,
+        assessment: CausalAssessmentDraft,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> CausalAssessmentRecord: ...
+
+    def get_causal_assessment(self, assessment_id: str) -> CausalAssessmentRecord: ...
+
+    def append_repair_outcome(
+        self,
+        outcome: RepairOutcome,
+        context: HarnessContext,
+        *,
+        created_at: datetime,
+        redaction_state: str,
+    ) -> str: ...
 
     def append_generalization_review(
         self,
@@ -78,6 +105,7 @@ class EventStorePort(Protocol):
         *,
         created_at: datetime,
         redaction_state: str,
+        causal_assessment_id: str | None = None,
     ) -> GeneralizationReview: ...
 
     def get_generalization_review(self, review_id: str) -> GeneralizationReview: ...
