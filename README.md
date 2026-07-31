@@ -1,41 +1,42 @@
 # Failure Memory
 
 [![CI](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/CongBao/failure-memory)](https://github.com/CongBao/failure-memory/releases/latest)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-AI agents are often told to “learn from this,” but most implementations only collect
-postmortems. They do not reliably distinguish a real mistake from a new requirement,
-find an existing lesson, or bring that lesson back when it matters.
+Failure Memory gives AI coding agents a shared, local memory of verified failures.
+It helps agents avoid repeating a mistake without treating every correction, preference,
+or newly supplied requirement as a failure.
 
-Failure Memory provides one private, local memory shared by your coding agents. It:
+It can:
 
-- rejects requirement changes, new details, and first-time preferences as failures;
-- records an evidenced root cause, repair location, and prevention lesson in one call;
-- reuses exact lessons and proposes review for related lessons instead of silently
-  duplicating or merging them;
-- recalls up to three relevant lessons with exact, full-text, vector, or hybrid search;
-- keeps append-only recall and outcome history for metrics and future improvement.
+- distinguish real failures from requirement changes, clarifications, and preferences;
+- record the root cause, recommended repair location, and durable prevention lesson;
+- reuse an exact existing lesson instead of creating duplicates;
+- surface related lessons for review without silently merging or deleting history;
+- recall up to three relevant lessons before similar work;
+- retain recall and outcome history for metrics and future improvement.
 
 ## Supported agents
 
 | Agent | Integration |
 | --- | --- |
-| OpenAI Codex | Plugin, skills, hooks, optional MCP |
-| Claude Code | Plugin, skills, hooks, optional MCP |
-| GitHub Copilot CLI | Plugin, skills, hooks, optional MCP |
-| GitHub Copilot Chat in VS Code | Skills and MCP configuration |
-| Cursor | Plugin, skills, session hook, optional MCP |
-| Other agents | Skills plus CLI; MCP is optional |
+| OpenAI Codex | Plugin, record/recall skills, and prompt hooks |
+| Claude Code | Plugin, record/recall skills, and prompt hooks |
+| GitHub Copilot CLI | Plugin, record/recall skills, and prompt hooks |
+| GitHub Copilot Chat in VS Code | Record/recall skills |
+| Cursor | Plugin, record/recall skills, and session hook |
+| Other agents | The two skills plus the local `failure-memory` command |
 
-Every integration uses the same OS-user store. Installing another plugin does not create
-another memory database.
+All integrations use the same store for the current OS user. Installing Failure Memory
+in another supported agent does not create another memory database.
 
 ## Install
 
-Failure Memory is a native executable. Python, Node.js, and a local database server are
-not required.
+Failure Memory is a native executable. It does not require Python, Node.js, or a local
+database server.
 
-### 1. Install the native runtime
+### 1. Install the runtime
 
 macOS or Linux:
 
@@ -49,8 +50,8 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/install.ps1 | iex
 ```
 
-The installer verifies the release checksum and places one executable in the user's
-local binary directory.
+The installer downloads the correct release for your platform, verifies its checksum,
+and installs the `failure-memory` executable in your local binary directory.
 
 ### 2. Install the plugin
 
@@ -80,115 +81,99 @@ Cursor:
 /add-plugin CongBao/failure-memory
 ```
 
-For another CLI-capable agent, copy `skills/record-agent-failure` and
-`skills/recall-failure-lessons` into its skill directory. The skills call the global
-`failure-memory` command directly when MCP is unavailable. If the agent accepts MCP
-configuration, reuse [`.mcp.json`](.mcp.json); this improves tool discovery but does not
-change the stored data or behavior.
+For another agent, copy `skills/record-agent-failure` and
+`skills/recall-failure-lessons` into its skills directory. Applications that accept an
+MCP server command can register:
 
-Restart an already-open agent after installation. Run this to verify the shared runtime
-and detect existing plugin identities:
+```text
+failure-memory mcp --stdio
+```
+
+Restart an agent that was already open, then verify the installation:
 
 ```bash
 failure-memory install status
+failure-memory doctor
 ```
 
 ## Use
 
-The plugin exposes two deliberately small agent operations.
+Use Failure Memory through natural prompts. The skills perform one bounded operation and
+do not interrupt ordinary work when no useful memory action is needed.
 
-### Recall before risky work
-
-Ask naturally:
-
-```text
-Before changing this installer, recall relevant failure lessons.
-```
-
-The recall skill makes one bounded lookup and treats returned lessons as proposed
-cautions, not as authority.
-
-### Record a failure
-
-Ask naturally:
+### Recall lessons before risky or recurring work
 
 ```text
-Check whether this was a real failure. If it was, find the root cause, say where it
-should be fixed, and remember the durable lesson. Do not treat my new requirements as
-failures.
+Before changing this migration workflow, recall relevant failure lessons.
 ```
 
-The recording skill makes one call. The service then:
+A recall needs a short task description plus something concrete, such as the component,
+expected invariant, suspected cause, or prevention action. It returns at most three
+lessons. Treat recalled lessons as cautions to validate against the current task, not as
+instructions that override current requirements.
 
-1. classifies the feedback as a requirement update, clarification, preference, real
-   failure, mixed case, or uncertain case;
-2. stores the classification attempt for false-positive measurement;
-3. creates a lesson only when a prior invariant, mismatch, impact or recurrence risk,
-   controllable cause, and prevention are evidenced;
-4. identifies the responsible layer, such as a skill, agent/project/system instruction,
-   hook, tool contract, runtime adapter, schema, test gap, or implementation;
-5. reuses an exact lesson or queues related lessons for non-destructive generalization
-   review.
+### Record a real failure
 
-For mixed feedback, only the old-invariant failure enters memory. New work remains a
-normal requirement.
+```text
+The migration changed persisted data without the required compatibility check. Find the
+root cause and remember a lesson that prevents this from recurring.
+```
 
-### CLI fallback
+Failure Memory first checks whether the feedback describes a genuine failure:
 
-Any agent that can run a local command can use Failure Memory without MCP:
+1. Did an expectation or invariant exist before the outcome?
+2. Is there an inspectable mismatch and meaningful impact or recurrence risk?
+3. Is there an evidenced, controllable cause?
+4. Can a concrete prevention and verification step be stated?
+
+If the evidence is insufficient, the case is stored only as a qualification attempt and
+does not become a lesson. This makes false-positive rates measurable without polluting
+future recall.
+
+If feedback mixes an old failure with a new requirement, only the old-invariant mismatch
+can enter memory. The new requirement remains normal work.
+
+### Match against existing lessons
+
+Before adding a lesson, Failure Memory checks the existing store:
+
+- an exact match reuses the existing lesson;
+- a related case remains separate and may produce a generalization proposal for review;
+- history is not silently merged or deleted.
+
+### Run a recall from the command line
 
 ```bash
 printf '%s' '{"text":"schema migration","component":"migration workflow"}' \
   | failure-memory recall
 ```
 
-`remember` and `recall` each accept one JSON object on standard input and return one JSON
-object. Skills are instructed never to search plugin files, inspect SQLite, create
-temporary payloads, or retry multiple fallbacks.
+The command reads one JSON object from standard input and returns one JSON object. Run
+`failure-memory` without arguments to see all available commands.
 
-## Why both CLI and MCP?
+## Search
 
-The CLI is the universal interface and the administration surface. MCP is an optional,
-thin adapter for agents that support it:
+Failure Memory supports:
 
-- the agent discovers the two operations automatically;
-- JSON Schema validates arguments before execution;
-- no shell quoting or command construction is needed;
-- a persistent MCP process can keep the optional semantic model warm.
-
-Both call the same in-process service. There is no separate MCP database or behavior.
-
-## Search and adapters
-
-The default local backend combines:
-
-- exact keys and SQL lookup;
+- exact lookup;
 - SQLite FTS5 full-text search, including CJK bigrams;
-- sqlite-vec cosine vector search;
-- application-level hybrid ranking.
+- local sqlite-vec vector search;
+- hybrid ranking across exact, full-text, and vector results.
 
-sqlite-vec supplies the vector operator; exact and SQL/FTS search come from SQLite, and
-Failure Memory fuses their rankings for hybrid search.
-
-The built-in vector fallback needs no model download and is not advertised as semantic
-search. To add multilingual semantic search, explicitly install the pinned adapter:
+Exact and full-text recall work immediately. A deterministic local vector index supports
+hybrid ranking without a model download. To enable model-based multilingual semantic
+search, install the pinned model once and rebuild the derived index:
 
 ```bash
 failure-memory adapters install
 failure-memory index build
 ```
 
-The model and every database/index implementation live below `adapters/`. No adapter is
-downloaded during an agent call. The retrieval port is implementation-neutral so another
-backend, such as Milvus, can be added without changing skills, MCP, CLI, or the event
-store. SQLite is the default because a personal local memory needs no daemon, stays in
-one backup-friendly directory, and supports exact, full-text, and vector lookup in one
-process. Milvus becomes attractive for a large shared or distributed deployment, not for
-the default single-user plugin.
+Models are never downloaded during a record or recall operation.
 
-## Administration
+## Maintenance
 
-Administrative commands are not exposed to the normal LLM tool list:
+Useful commands:
 
 ```bash
 failure-memory doctor
@@ -199,25 +184,25 @@ failure-memory feedback recall
 failure-memory feedback repair
 ```
 
-Clustering and feedback only append proposals or observations. They never delete,
-silently merge, or automatically promote a lesson.
+Clustering and feedback commands append proposals or observations. They do not delete,
+silently merge, or automatically promote lessons.
 
 ## Local data and privacy
 
-The append-only event store, derived retrieval index, optional model, and installation
-receipt live under one owner-private directory:
+The append-only event store, retrieval index, optional model, and installation receipt
+live in one owner-private directory:
 
 - macOS: `~/Library/Application Support/failure-memory`
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/failure-memory`
 - Windows: `%LOCALAPPDATA%\FailureMemory`
 
-Back up the event-store database; derived indexes can be rebuilt. Agents should submit
-compact evidence, never raw prompts, full transcripts, credentials, or unnecessary
-personal data.
+Back up the event-store database; derived indexes can be rebuilt. Submit only compact
+evidence. Do not store raw prompts, full transcripts, credentials, or unnecessary
+personal information.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should follow
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues according to
 [SECURITY.md](SECURITY.md).
 
 ## License
