@@ -112,8 +112,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func runInstall(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 || (args[0] != "status" && args[0] != "runtime") {
-		_, _ = fmt.Fprintln(stderr, "usage: failure-memory install <status|runtime>")
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: failure-memory install <status|runtime|plugin|all>")
 		return 2
 	}
 	paths, err := config.ResolvePaths()
@@ -122,16 +122,50 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var output any
-	if args[0] == "status" {
+	switch args[0] {
+	case "status":
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(stderr, "usage: failure-memory install status")
+			return 2
+		}
 		output, err = install.Inspect(paths)
-	} else {
+	case "runtime":
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(stderr, "usage: failure-memory install runtime")
+			return 2
+		}
 		output, err = install.InstallRuntime(paths)
+	case "plugin", "all":
+		flags := flag.NewFlagSet("install "+args[0], flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		var harnesses []string
+		flags.Func("harness", "codex, claude, copilot, cursor, or auto; repeatable", func(value string) error {
+			harnesses = append(harnesses, value)
+			return nil
+		})
+		if parseErr := flags.Parse(args[1:]); parseErr != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			_, _ = fmt.Fprintf(stderr, "usage: failure-memory install %s [--harness <name>]\n", args[0])
+			return 2
+		}
+		if args[0] == "plugin" {
+			output, err = install.InstallPlugins(context.Background(), harnesses)
+		} else {
+			output, err = install.InstallAll(context.Background(), paths, harnesses)
+		}
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: failure-memory install <status|runtime|plugin|all>")
+		return 2
+	}
+	if output != nil {
+		if encodeErr := encodeOne(stdout, output); encodeErr != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", encodeErr)
+			return 1
+		}
 	}
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
-		return 1
-	}
-	if err := encodeOne(stdout, output); err != nil {
 		_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
 		return 1
 	}
@@ -380,6 +414,8 @@ func printUsage(writer io.Writer) {
 		"  hook              emit bounded non-persistent harness guidance",
 		"  install status    detect one runtime and duplicate plugin identities",
 		"  install runtime   install/update the shared native executable",
+		"  install plugin    install/update harness plugins (--harness defaults to auto)",
+		"  install all       install runtime and detected harness plugins in one operation",
 		"  version           print build identity",
 	}
 	_, _ = fmt.Fprintln(writer, strings.Join(lines, "\n"))

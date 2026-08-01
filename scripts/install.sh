@@ -3,6 +3,33 @@ set -eu
 
 repository="${FAILURE_MEMORY_REPOSITORY:-CongBao/failure-memory}"
 base_url="${FAILURE_MEMORY_RELEASE_BASE_URL:-https://github.com/${repository}/releases/latest/download}"
+harness="${FAILURE_MEMORY_HARNESS:-auto}"
+runtime_only=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --harness)
+      if [ "$#" -lt 2 ]; then
+        echo "failure-memory: --harness requires a value" >&2
+        exit 2
+      fi
+      harness="$2"
+      shift 2
+      ;;
+    --runtime-only)
+      runtime_only=true
+      shift
+      ;;
+    --help|-h)
+      echo "usage: install.sh [--harness codex,claude,copilot,cursor|auto] [--runtime-only]"
+      exit 0
+      ;;
+    *)
+      echo "failure-memory: unknown installer option: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 case "$(uname -s)" in
   Darwin) platform="darwin" ;;
@@ -37,8 +64,15 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 tar -xzf "${temporary}/${archive}" -C "$temporary"
-"${temporary}/failure-memory" install runtime
+if [ "$runtime_only" = true ]; then
+  "${temporary}/failure-memory" install runtime
+else
+  "${temporary}/failure-memory" install all --harness "$harness"
+fi
 
 runtime="${HOME}/.local/bin/failure-memory"
 printf 'Installed Failure Memory at %s\n' "$runtime"
-printf 'If your agent was already open, restart it so the plugin can find the command.\n'
+if [ "$runtime_only" = false ]; then
+  printf 'Installed or updated plugins for: %s\n' "$harness"
+fi
+printf 'Restart any agent application that was already open.\n'

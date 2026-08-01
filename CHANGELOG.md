@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-01
+
+### Added
+
+- One-command installation of the shared native runtime and every detected Codex,
+  Claude Code, or GitHub Copilot CLI plugin.
+- Agent selection, idempotent marketplace updates, macOS application discovery, and an
+  explicit Cursor handoff when automatic plugin installation is unavailable.
+
 ## [0.8.0] - 2026-07-31
 
 ### Added

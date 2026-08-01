@@ -1,9 +1,10 @@
-// Package install provides duplicate-safe runtime installation and harness
-// discovery. Native plugin managers remain responsible for plugin lifecycle;
-// this package installs the one shared executable they reference.
+// Package install provides duplicate-safe runtime and harness plugin
+// installation. Every harness plugin references the same native executable and
+// owner-private data store.
 package install
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,11 +16,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/CongBao/failure-memory/internal/config"
 	"github.com/CongBao/failure-memory/internal/version"
 )
+
+const (
+	MarketplaceName   = "failure-memory"
+	MarketplaceSource = "CongBao/failure-memory"
+	PluginID          = "failure-memory@failure-memory"
+)
+
+var supportedHarnesses = []string{"codex", "claude-code", "copilot-cli", "cursor"}
 
 type HarnessState struct {
 	Name                  string   `json:"name"`
@@ -47,6 +57,46 @@ type RuntimeResult struct {
 	SHA256      string `json:"sha256"`
 }
 
+type PluginResult struct {
+	Harness         string `json:"harness"`
+	Status          string `json:"status"`
+	Executable      string `json:"executable,omitempty"`
+	PluginID        string `json:"plugin_id,omitempty"`
+	Message         string `json:"message,omitempty"`
+	RestartRequired bool   `json:"restart_required"`
+}
+
+type AllResult struct {
+	Runtime RuntimeResult  `json:"runtime"`
+	Plugins []PluginResult `json:"plugins"`
+}
+
+type commandExecutor interface {
+	Run(context.Context, string, ...string) (string, error)
+}
+
+type osCommandExecutor struct{}
+
+func (osCommandExecutor) Run(ctx context.Context, name string, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			return "", fmt.Errorf("%s: %w", filepath.Base(name), err)
+		}
+		return message, fmt.Errorf("%s: %w: %s", filepath.Base(name), err, message)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+type installEnvironment struct {
+	executor               commandExecutor
+	lookup                 func(string) (string, error)
+	goos                   string
+	copilotDirectInstalled func() bool
+}
+
 type receipt struct {
 	SchemaVersion int    `json:"schema_version"`
 	Version       string `json:"version"`
@@ -60,11 +110,12 @@ func Inspect(paths config.Paths) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	environment := defaultInstallEnvironment()
 	states := []HarnessState{
-		detectHarness("codex", "codex", codexPluginPaths()),
-		detectHarness("claude-code", "claude", claudePluginPaths()),
-		detectHarness("copilot-cli", "copilot", copilotPluginPaths()),
-		detectHarness("cursor", "cursor-agent", cursorPluginPaths()),
+		detectHarnessPath("codex", findHarnessExecutable("codex", environment), codexPluginPaths()),
+		detectHarnessPath("claude-code", findHarnessExecutable("claude-code", environment), claudePluginPaths()),
+		detectHarnessPath("copilot-cli", findHarnessExecutable("copilot-cli", environment), copilotPluginPaths()),
+		detectHarnessPath("cursor", findHarnessExecutable("cursor", environment), cursorPluginPaths()),
 	}
 	return Status{
 		Version:        version.Version,
@@ -145,6 +196,260 @@ func InstallRuntime(paths config.Paths) (RuntimeResult, error) {
 	return result, nil
 }
 
+// InstallAll installs or updates the one shared runtime, then installs the
+// public plugin through each selected harness's native plugin manager.
+func InstallAll(
+	ctx context.Context, paths config.Paths, requestedHarnesses []string,
+) (AllResult, error) {
+	runtimeResult, err := InstallRuntime(paths)
+	if err != nil {
+		return AllResult{}, err
+	}
+	plugins, err := InstallPlugins(ctx, requestedHarnesses)
+	return AllResult{Runtime: runtimeResult, Plugins: plugins}, err
+}
+
+// InstallPlugins installs or updates the public plugin without creating a
+// second runtime or data store. Use "auto" to target every detected harness.
+func InstallPlugins(ctx context.Context, requestedHarnesses []string) ([]PluginResult, error) {
+	return installPlugins(ctx, requestedHarnesses, defaultInstallEnvironment())
+}
+
+func defaultInstallEnvironment() installEnvironment {
+	return installEnvironment{
+		executor:               osCommandExecutor{},
+		lookup:                 exec.LookPath,
+		goos:                   runtime.GOOS,
+		copilotDirectInstalled: copilotDirectPluginInstalled,
+	}
+}
+
+func installPlugins(
+	ctx context.Context, requestedHarnesses []string, environment installEnvironment,
+) ([]PluginResult, error) {
+	harnesses, auto, err := normalizeHarnesses(requestedHarnesses)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]PluginResult, 0, len(harnesses))
+	var failures []error
+	for _, harness := range harnesses {
+		executable := findHarnessExecutable(harness, environment)
+		if executable == "" {
+			if auto {
+				continue
+			}
+			results = append(results, PluginResult{
+				Harness: harness,
+				Status:  "not_detected",
+				Message: harness + " is not installed or its command is not discoverable",
+			})
+			failures = append(failures, fmt.Errorf("%s was not detected", harness))
+			continue
+		}
+		result, installErr := installHarnessPlugin(ctx, harness, executable, environment)
+		results = append(results, result)
+		if installErr != nil {
+			failures = append(failures, installErr)
+		}
+	}
+	if auto && len(results) == 0 {
+		return results, errors.New("no supported agent application was detected; rerun with --harness <name>")
+	}
+	return results, errors.Join(failures...)
+}
+
+func normalizeHarnesses(requested []string) ([]string, bool, error) {
+	if len(requested) == 0 {
+		requested = []string{"auto"}
+	}
+	aliases := map[string]string{
+		"codex": "codex", "claude": "claude-code", "claude-code": "claude-code",
+		"copilot": "copilot-cli", "copilot-cli": "copilot-cli", "cursor": "cursor",
+	}
+	auto := false
+	unique := map[string]bool{}
+	for _, value := range requested {
+		for _, item := range strings.Split(value, ",") {
+			item = strings.ToLower(strings.TrimSpace(item))
+			if item == "auto" {
+				auto = true
+				continue
+			}
+			canonical, ok := aliases[item]
+			if !ok {
+				return nil, false, fmt.Errorf(
+					"unsupported harness %q (choose codex, claude, copilot, cursor, or auto)",
+					item,
+				)
+			}
+			unique[canonical] = true
+		}
+	}
+	if auto && len(unique) != 0 {
+		return nil, false, errors.New("auto cannot be combined with named harnesses")
+	}
+	if auto {
+		return append([]string(nil), supportedHarnesses...), true, nil
+	}
+	if len(unique) == 0 {
+		return nil, false, errors.New("at least one harness is required")
+	}
+	result := make([]string, 0, len(unique))
+	for _, harness := range supportedHarnesses {
+		if unique[harness] {
+			result = append(result, harness)
+		}
+	}
+	return result, false, nil
+}
+
+func installHarnessPlugin(
+	ctx context.Context, harness, executable string, environment installEnvironment,
+) (PluginResult, error) {
+	result := PluginResult{
+		Harness:         harness,
+		Executable:      executable,
+		PluginID:        PluginID,
+		RestartRequired: true,
+	}
+	var err error
+	switch harness {
+	case "codex":
+		err = installCodex(ctx, executable, environment.executor)
+	case "claude-code":
+		err = installClaude(ctx, executable, environment.executor)
+	case "copilot-cli":
+		migrated := false
+		migrated, err = installCopilot(ctx, executable, environment)
+		if migrated {
+			result.Message = "replaced the deprecated direct install with the marketplace plugin"
+		}
+	case "cursor":
+		result.Status = "manual_action_required"
+		result.Message = "in Cursor, run /add-plugin CongBao/failure-memory"
+		return result, nil
+	default:
+		err = fmt.Errorf("unsupported harness %q", harness)
+	}
+	if err != nil {
+		result.Status = "failed"
+		result.Message = err.Error()
+		return result, fmt.Errorf("install %s plugin: %w", harness, err)
+	}
+	result.Status = "installed_or_updated"
+	return result, nil
+}
+
+func installCodex(ctx context.Context, executable string, executor commandExecutor) error {
+	output, err := executor.Run(
+		ctx, executable, "plugin", "marketplace", "add", MarketplaceSource, "--ref", "main", "--json",
+	)
+	if err != nil {
+		return err
+	}
+	var addResult struct {
+		AlreadyAdded bool `json:"alreadyAdded"`
+	}
+	if jsonErr := json.Unmarshal([]byte(output), &addResult); jsonErr != nil || addResult.AlreadyAdded {
+		if _, err := executor.Run(
+			ctx, executable, "plugin", "marketplace", "upgrade", MarketplaceName, "--json",
+		); err != nil {
+			return err
+		}
+	}
+	_, err = executor.Run(ctx, executable, "plugin", "add", PluginID, "--json")
+	return err
+}
+
+func installClaude(ctx context.Context, executable string, executor commandExecutor) error {
+	output, addErr := executor.Run(
+		ctx, executable, "plugin", "marketplace", "add", MarketplaceSource,
+	)
+	registered := addErr != nil && alreadyRegistered(output)
+	if addErr != nil && !registered {
+		return addErr
+	}
+	if registered {
+		if _, err := executor.Run(
+			ctx, executable, "plugin", "marketplace", "update", MarketplaceName,
+		); err != nil {
+			return err
+		}
+	}
+	_, err := executor.Run(ctx, executable, "plugin", "install", PluginID, "--scope", "user")
+	return err
+}
+
+func installCopilot(
+	ctx context.Context, executable string, environment installEnvironment,
+) (bool, error) {
+	migrated := environment.copilotDirectInstalled != nil &&
+		environment.copilotDirectInstalled()
+	if migrated {
+		if _, err := environment.executor.Run(
+			ctx, executable, "plugin", "uninstall", "failure-memory",
+		); err != nil {
+			return false, err
+		}
+	}
+	output, addErr := environment.executor.Run(
+		ctx, executable, "plugin", "marketplace", "add", MarketplaceSource,
+	)
+	registered := addErr != nil && alreadyRegistered(output)
+	if addErr != nil && !registered {
+		return migrated, addErr
+	}
+	if registered {
+		if _, err := environment.executor.Run(
+			ctx, executable, "plugin", "marketplace", "update", MarketplaceName,
+		); err != nil {
+			return migrated, err
+		}
+	}
+	_, err := environment.executor.Run(ctx, executable, "plugin", "install", PluginID)
+	return migrated, err
+}
+
+func alreadyRegistered(output string) bool {
+	value := strings.ToLower(output)
+	return strings.Contains(value, "already registered") ||
+		strings.Contains(value, "already added") ||
+		strings.Contains(value, "already exists")
+}
+
+func findHarnessExecutable(harness string, environment installEnvironment) string {
+	commands := map[string][]string{
+		"codex":       {"codex"},
+		"claude-code": {"claude"},
+		"copilot-cli": {"copilot"},
+		"cursor":      {"cursor-agent", "cursor"},
+	}
+	for _, command := range commands[harness] {
+		if path, err := environment.lookup(command); err == nil && path != "" {
+			return path
+		}
+	}
+	if environment.goos != "darwin" {
+		return ""
+	}
+	fallbacks := map[string][]string{
+		"codex": {
+			"/Applications/ChatGPT.app/Contents/Resources/codex",
+			"/Applications/Codex.app/Contents/Resources/codex",
+		},
+		"cursor": {
+			"/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+		},
+	}
+	for _, candidate := range fallbacks[harness] {
+		if regularExecutable(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func DefaultRuntimePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -162,6 +467,10 @@ func DefaultRuntimePath() (string, error) {
 
 func detectHarness(name, executable string, candidates []string) HarnessState {
 	executablePath, _ := exec.LookPath(executable)
+	return detectHarnessPath(name, executablePath, candidates)
+}
+
+func detectHarnessPath(name, executablePath string, candidates []string) HarnessState {
 	pluginPaths := existingUniquePaths(candidates)
 	state := HarnessState{
 		Name:                  name,
@@ -228,9 +537,29 @@ func claudePluginPaths() []string {
 
 func copilotPluginPaths() []string {
 	home, _ := os.UserHomeDir()
-	return []string{
-		filepath.Join(home, ".copilot", "installed-plugins", "_direct", "failure-memory"),
+	result, _ := filepath.Glob(filepath.Join(
+		home, ".copilot", "installed-plugins", "_direct", "*failure-memory",
+	))
+	marketplaceMatches, _ := filepath.Glob(filepath.Join(
+		home, ".copilot", "installed-plugins", "*", "failure-memory",
+	))
+	return append(result, marketplaceMatches...)
+}
+
+func copilotDirectPluginInstalled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
 	}
+	matches, _ := filepath.Glob(filepath.Join(
+		home, ".copilot", "installed-plugins", "_direct", "*failure-memory",
+	))
+	for _, path := range matches {
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func cursorPluginPaths() []string {

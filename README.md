@@ -33,10 +33,9 @@ in another supported agent does not create another memory database.
 
 ## Install
 
-Failure Memory is a native executable. It does not require Python, Node.js, or a local
-database server.
-
-### 1. Install the runtime
+One command installs the native runtime and the plugin for every supported agent it
+detects. It is safe to run again to update an existing installation. Failure Memory does
+not require Python, Node.js, or a database server.
 
 macOS or Linux:
 
@@ -50,36 +49,21 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/install.ps1 | iex
 ```
 
-The installer downloads the correct release for your platform, verifies its checksum,
-and installs the `failure-memory` executable in your local binary directory.
+The installer downloads the release for your platform, verifies its checksum, installs
+one shared `failure-memory` executable, and uses each detected agent's native plugin
+manager. Codex, Claude Code, and GitHub Copilot CLI are completed automatically. If
+Cursor is detected, the installer prints the `/add-plugin` command to run because Cursor
+does not currently expose a stable non-interactive plugin installer.
 
-### 2. Install the plugin
-
-Codex:
-
-```bash
-codex plugin marketplace add CongBao/failure-memory
-codex plugin add failure-memory@failure-memory
-```
-
-Claude Code:
+To target selected agents on macOS or Linux, pass a comma-separated list:
 
 ```bash
-claude plugin marketplace add CongBao/failure-memory
-claude plugin install failure-memory@failure-memory
+curl -fsSL https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/install.sh \
+  | sh -s -- --harness codex,copilot
 ```
 
-GitHub Copilot CLI:
-
-```bash
-copilot plugin install CongBao/failure-memory
-```
-
-Cursor:
-
-```text
-/add-plugin CongBao/failure-memory
-```
+Accepted names are `codex`, `claude`, `copilot`, `cursor`, and `auto`. Use
+`--runtime-only` only when an administrator manages plugins separately.
 
 For another agent, copy `skills/record-agent-failure` and
 `skills/recall-failure-lessons` into its skills directory. Applications that accept an
@@ -89,7 +73,7 @@ MCP server command can register:
 failure-memory mcp --stdio
 ```
 
-Restart an agent that was already open, then verify the installation:
+Restart any agent application that was already open, then verify the installation:
 
 ```bash
 failure-memory install status

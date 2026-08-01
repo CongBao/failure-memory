@@ -1,4 +1,22 @@
+param(
+    [string]$Harness = $env:FAILURE_MEMORY_HARNESS,
+    [switch]$RuntimeOnly
+)
+
 $ErrorActionPreference = "Stop"
+
+if (-not $Harness) {
+    $Harness = "auto"
+}
+
+$runtimeDirectory = Join-Path $env:LOCALAPPDATA "FailureMemory\bin"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$userPathEntries = @($userPath -split ";" | Where-Object { $_ })
+if ($runtimeDirectory -notin $userPathEntries) {
+    $updatedUserPath = (@($runtimeDirectory) + $userPathEntries) -join ";"
+    [Environment]::SetEnvironmentVariable("Path", $updatedUserPath, "User")
+}
+$env:Path = "$runtimeDirectory;$env:Path"
 
 $repository = if ($env:FAILURE_MEMORY_REPOSITORY) {
     $env:FAILURE_MEMORY_REPOSITORY
@@ -37,8 +55,16 @@ try {
     }
 
     Expand-Archive -Path $archivePath -DestinationPath $temporary
-    & (Join-Path $temporary "failure-memory.exe") install runtime
-    Write-Host "Installed Failure Memory. Restart any open agent application."
+    $executable = Join-Path $temporary "failure-memory.exe"
+    if ($RuntimeOnly) {
+        & $executable install runtime
+    } else {
+        & $executable install all --harness $Harness
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "failure-memory: installation did not complete"
+    }
+    Write-Host "Installed Failure Memory. Restart any agent application that was already open."
 } finally {
     Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue
 }
