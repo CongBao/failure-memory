@@ -15,10 +15,12 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gofrs/flock"
 	_ "modernc.org/sqlite"
 	_ "modernc.org/sqlite/vec"
 
 	"github.com/CongBao/failure-memory/internal/config"
+	"github.com/CongBao/failure-memory/internal/lessonmanifest"
 	"github.com/CongBao/failure-memory/internal/model"
 	"github.com/CongBao/failure-memory/internal/ports"
 )
@@ -88,7 +90,7 @@ func Open(path string, embedder Embedder) (*Index, error) {
 		return nil, fmt.Errorf("create retrieval directory: %w", err)
 	}
 	dsn := fmt.Sprintf(
-		"file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		"file:%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)",
 		filepath.ToSlash(path),
 	)
 	db, err := sql.Open("sqlite", dsn)
@@ -102,7 +104,21 @@ func Open(path string, embedder Embedder) (*Index, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping retrieval index: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, baseSchema); err != nil {
+	initializationLock := flock.New(path + ".initialization.lock")
+	locked, err := initializationLock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("lock retrieval initialization: %w", err)
+	}
+	if !locked {
+		_ = db.Close()
+		return nil, errors.New("retrieval initialization is busy")
+	}
+	defer func() {
+		_ = initializationLock.Unlock()
+		_ = initializationLock.Close()
+	}()
+	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL;"+baseSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize retrieval index: %w", err)
 	}
@@ -143,7 +159,8 @@ func initializeVectorSchema(ctx context.Context, db *sql.DB, embedder Embedder) 
 		INSERT INTO retrieval_metadata(key, value) VALUES ('schema_version', '1')
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value;
 		INSERT INTO retrieval_metadata(key, value) VALUES ('embedding_profile', ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+		INSERT OR IGNORE INTO retrieval_metadata(key, value) VALUES ('source_revision', '0')`,
 		profile,
 	); err != nil {
 		return err
@@ -195,10 +212,34 @@ func (i *Index) Status(ctx context.Context) (RetrievalStatus, error) {
 			return RetrievalStatus{}, err
 		}
 	}
+	var revisionText string
+	if err := i.db.QueryRowContext(
+		ctx,
+		"SELECT value FROM retrieval_metadata WHERE key = 'source_revision'",
+	).Scan(&revisionText); err != nil {
+		return RetrievalStatus{}, err
+	}
+	revision, err := strconv.ParseInt(revisionText, 10, 64)
+	if err != nil {
+		return RetrievalStatus{}, fmt.Errorf("invalid retrieval source revision %q", revisionText)
+	}
+	status.SourceRevision = revision
 	return status, nil
 }
 
-func (i *Index) Upsert(ctx context.Context, lesson model.LessonDocument) error {
+func (i *Index) Manifest(ctx context.Context) (string, error) {
+	documents, err := i.listDocuments(ctx)
+	if err != nil {
+		return "", err
+	}
+	return lessonmanifest.Digest(documents), nil
+}
+
+func (i *Index) Upsert(
+	ctx context.Context,
+	lesson model.LessonDocument,
+	sourceRevision int64,
+) error {
 	vector, err := i.embedder.Embed("passage: " + lesson.Document)
 	if err != nil {
 		return fmt.Errorf("embed lesson: %w", err)
@@ -210,6 +251,9 @@ func (i *Index) Upsert(ctx context.Context, lesson model.LessonDocument) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := upsertTx(ctx, tx, lesson, blob); err != nil {
+		return err
+	}
+	if err := updateSourceRevisionTx(ctx, tx, sourceRevision); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -300,7 +344,11 @@ func upsertTx(
 	return nil
 }
 
-func (i *Index) Rebuild(ctx context.Context, lessons []model.LessonDocument) error {
+func (i *Index) Rebuild(
+	ctx context.Context,
+	lessons []model.LessonDocument,
+	sourceRevision int64,
+) error {
 	type preparedLesson struct {
 		document model.LessonDocument
 		vector   []byte
@@ -337,7 +385,71 @@ func (i *Index) Rebuild(ctx context.Context, lessons []model.LessonDocument) err
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO retrieval_metadata(key, value) VALUES ('source_revision', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, strconv.FormatInt(sourceRevision, 10)); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func updateSourceRevisionTx(ctx context.Context, tx *sql.Tx, sourceRevision int64) error {
+	var currentText string
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT value FROM retrieval_metadata WHERE key = 'source_revision'",
+	).Scan(&currentText); err != nil {
+		return err
+	}
+	current, err := strconv.ParseInt(currentText, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid retrieval source revision %q", currentText)
+	}
+	if sourceRevision < current {
+		sourceRevision = current
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE retrieval_metadata SET value = ? WHERE key = 'source_revision'
+	`, strconv.FormatInt(sourceRevision, 10))
+	return err
+}
+
+func (i *Index) listDocuments(ctx context.Context) ([]model.LessonDocument, error) {
+	rows, err := i.db.QueryContext(ctx, `
+		SELECT lesson_id, lesson_version_id, signature, title, rule, prevention,
+		       verification, applicability, counterexamples, cause_layer,
+		       failure_mode, component, document
+		FROM lesson_document
+		ORDER BY lesson_version_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var lessons []model.LessonDocument
+	for rows.Next() {
+		var lesson model.LessonDocument
+		if err := rows.Scan(
+			&lesson.LessonID,
+			&lesson.LessonVersionID,
+			&lesson.Signature,
+			&lesson.Title,
+			&lesson.Rule,
+			&lesson.Prevention,
+			&lesson.Verification,
+			&lesson.Applicability,
+			&lesson.Counterexamples,
+			&lesson.CauseLayer,
+			&lesson.FailureMode,
+			&lesson.Component,
+			&lesson.Document,
+		); err != nil {
+			return nil, err
+		}
+		lessons = append(lessons, lesson)
+	}
+	return lessons, rows.Err()
 }
 
 func (i *Index) Search(ctx context.Context, input model.RecallInput) (SearchResult, error) {

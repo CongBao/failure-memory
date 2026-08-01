@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-01
+
+### Added
+
+- Versioned, checksummed SQLite schema migrations with automatic pre-migration
+  snapshots and forward-version rejection.
+- Verified backup, backup inspection, and guarded restore commands with pre-restore
+  safety backups and interrupted-restore recovery.
+- Cross-process tests for concurrent agent writes, writer crashes, MCP startup with a
+  restricted `PATH`, and shared-store behavior.
+- Race detection, installer analysis, isolated installer smoke tests, packaged-runtime
+  smoke tests, and expanded cross-platform release gates.
+
+### Changed
+
+- Native MCP registration now uses each detected agent's user-level configuration and
+  the absolute path to the shared runtime instead of a plugin-relative launcher.
+- Derived retrieval indexes track the authoritative lesson revision and deterministic
+  lesson manifest, and repair missing or stale vectors automatically.
+- The installation identity key is now created atomically under a cross-process lock.
+
+### Fixed
+
+- Already-running writers from an older schema remain compatible after a migration.
+- Restore refuses to run while any agent process is using the event store.
+
 ## [0.9.0] - 2026-08-01
 
 ### Added

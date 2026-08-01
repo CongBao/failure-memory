@@ -159,6 +159,105 @@ func TestRecallRequiresBoundedEvidence(t *testing.T) {
 	}
 }
 
+func TestRecallRepairsAnIncompleteDerivedIndex(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FAILURE_MEMORY_HOME", root)
+	svc, err := Open("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := svc.Remember(context.Background(), testFailure())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	indexPath := filepath.Join(
+		root, "adapters", "retrieval", "sqlite-vec", "v1", "index.sqlite3",
+	)
+	db, err := sql.Open("sqlite", indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("DELETE FROM lesson_vec"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err = Open("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	recalled, err := svc.Recall(context.Background(), model.RecallInput{
+		Text:      "safe schema migration",
+		Component: "schema migration workflow",
+		TopK:      3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recalled.Lessons) != 1 || recalled.Lessons[0].LessonID != recorded.LessonID {
+		t.Fatalf("recalled lessons after repair = %#v", recalled.Lessons)
+	}
+	doctor, err := svc.Doctor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor["retrieval_index_complete"] != true {
+		t.Fatalf("doctor after repair = %#v", doctor)
+	}
+}
+
+func TestDoctorRepairsSameCountManifestDrift(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FAILURE_MEMORY_HOME", root)
+	svc, err := Open("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Remember(context.Background(), testFailure()); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	indexPath := filepath.Join(
+		root, "adapters", "retrieval", "sqlite-vec", "v1", "index.sqlite3",
+	)
+	db, err := sql.Open("sqlite", indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE lesson_document SET rule = 'tampered'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err = Open("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	doctor, err := svc.Doctor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor["retrieval_index_complete"] != true {
+		t.Fatalf("doctor did not repair manifest drift: %#v", doctor)
+	}
+	if doctor["retrieval_sync_state"] != "repaired" {
+		t.Fatalf("retrieval sync state = %#v", doctor["retrieval_sync_state"])
+	}
+}
+
 func testFailure() model.RememberInput {
 	return model.RememberInput{
 		Summary:        "The agent skipped an established compatibility preflight.",

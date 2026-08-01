@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	embeddingadapter "github.com/CongBao/failure-memory/internal/adapters/embedding"
 	"github.com/CongBao/failure-memory/internal/config"
@@ -19,6 +21,7 @@ import (
 	"github.com/CongBao/failure-memory/internal/mcpserver"
 	"github.com/CongBao/failure-memory/internal/model"
 	"github.com/CongBao/failure-memory/internal/service"
+	storesqlite "github.com/CongBao/failure-memory/internal/store/sqlite"
 	"github.com/CongBao/failure-memory/internal/version"
 )
 
@@ -101,12 +104,115 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runHook(args[1:], stdin, stdout, stderr)
 	case "install":
 		return runInstall(args[1:], stdout, stderr)
+	case "backup":
+		return runBackup(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return 0
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		printUsage(stderr)
+		return 2
+	}
+}
+
+func runBackup(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: failure-memory backup <create|verify|restore>")
+		return 2
+	}
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
+		return 1
+	}
+	switch args[0] {
+	case "create":
+		flags := flag.NewFlagSet("backup create", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		output := flags.String("output", "", "new backup directory")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			_, _ = fmt.Fprintln(stderr, "usage: failure-memory backup create [--output <directory>]")
+			return 2
+		}
+		if strings.TrimSpace(*output) == "" {
+			*output = filepath.Join(
+				paths.Root,
+				"backups",
+				"failure-memory-"+time.Now().UTC().Format("20060102T150405.000000000Z"),
+			)
+		}
+		return withService("backup", stderr, func(ctx context.Context, svc *service.Service) error {
+			result, err := svc.CreateBackup(ctx, *output)
+			if err != nil {
+				return err
+			}
+			return encodeOne(stdout, result)
+		})
+	case "verify":
+		if len(args) != 2 {
+			_, _ = fmt.Fprintln(stderr, "usage: failure-memory backup verify <directory>")
+			return 2
+		}
+		result, err := storesqlite.VerifyBackup(context.Background(), args[1])
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
+			return 1
+		}
+		if err := encodeOne(stdout, result); err != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
+			return 1
+		}
+		return 0
+	case "restore":
+		var backupPath string
+		if len(args) == 3 && args[1] == "--replace" {
+			backupPath = args[2]
+		} else if len(args) == 3 && args[2] == "--replace" {
+			backupPath = args[1]
+		} else {
+			_, _ = fmt.Fprintln(
+				stderr,
+				"usage: failure-memory backup restore <directory> --replace",
+			)
+			return 2
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := storesqlite.RestoreBackup(
+			ctx,
+			paths.EventStore,
+			backupPath,
+			filepath.Join(paths.Root, "backups"),
+		)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
+			return 1
+		}
+		svc, err := service.Open("restore")
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: event store restored but reopen failed: %v\n", err)
+			return 1
+		}
+		rebuild, rebuildErr := svc.RebuildIndex(ctx)
+		closeErr := svc.Close()
+		if err := errors.Join(rebuildErr, closeErr); err != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: event store restored but index rebuild failed: %v\n", err)
+			return 1
+		}
+		if err := encodeOne(stdout, map[string]any{
+			"restore":       result,
+			"index_rebuild": rebuild,
+		}); err != nil {
+			_, _ = fmt.Fprintf(stderr, "failure-memory: %v\n", err)
+			return 1
+		}
+		return 0
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: failure-memory backup <create|verify|restore>")
 		return 2
 	}
 }
@@ -416,6 +522,9 @@ func printUsage(writer io.Writer) {
 		"  install runtime   install/update the shared native executable",
 		"  install plugin    install/update harness plugins (--harness defaults to auto)",
 		"  install all       install runtime and detected harness plugins in one operation",
+		"  backup create     create a verified snapshot of the authoritative event store",
+		"  backup verify     verify a backup manifest, checksum, database, and event hashes",
+		"  backup restore    safely replace the global store and rebuild derived indexes",
 		"  version           print build identity",
 	}
 	_, _ = fmt.Fprintln(writer, strings.Join(lines, "\n"))

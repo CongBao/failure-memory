@@ -62,6 +62,7 @@ type PluginResult struct {
 	Status          string `json:"status"`
 	Executable      string `json:"executable,omitempty"`
 	PluginID        string `json:"plugin_id,omitempty"`
+	MCPConfigured   bool   `json:"mcp_configured"`
 	Message         string `json:"message,omitempty"`
 	RestartRequired bool   `json:"restart_required"`
 }
@@ -93,6 +94,7 @@ func (osCommandExecutor) Run(ctx context.Context, name string, args ...string) (
 type installEnvironment struct {
 	executor               commandExecutor
 	lookup                 func(string) (string, error)
+	home                   func() (string, error)
 	goos                   string
 	copilotDirectInstalled func() bool
 }
@@ -205,27 +207,40 @@ func InstallAll(
 	if err != nil {
 		return AllResult{}, err
 	}
-	plugins, err := InstallPlugins(ctx, requestedHarnesses)
+	plugins, err := installPlugins(
+		ctx, requestedHarnesses, runtimeResult.RuntimePath, defaultInstallEnvironment(),
+	)
 	return AllResult{Runtime: runtimeResult, Plugins: plugins}, err
 }
 
 // InstallPlugins installs or updates the public plugin without creating a
 // second runtime or data store. Use "auto" to target every detected harness.
 func InstallPlugins(ctx context.Context, requestedHarnesses []string) ([]PluginResult, error) {
-	return installPlugins(ctx, requestedHarnesses, defaultInstallEnvironment())
+	runtimePath, err := DefaultRuntimePath()
+	if err != nil {
+		return nil, err
+	}
+	if !regularExecutable(runtimePath) {
+		return nil, errors.New("shared runtime is not installed; run failure-memory install all")
+	}
+	return installPlugins(ctx, requestedHarnesses, runtimePath, defaultInstallEnvironment())
 }
 
 func defaultInstallEnvironment() installEnvironment {
 	return installEnvironment{
 		executor:               osCommandExecutor{},
 		lookup:                 exec.LookPath,
+		home:                   os.UserHomeDir,
 		goos:                   runtime.GOOS,
 		copilotDirectInstalled: copilotDirectPluginInstalled,
 	}
 }
 
 func installPlugins(
-	ctx context.Context, requestedHarnesses []string, environment installEnvironment,
+	ctx context.Context,
+	requestedHarnesses []string,
+	runtimePath string,
+	environment installEnvironment,
 ) ([]PluginResult, error) {
 	harnesses, auto, err := normalizeHarnesses(requestedHarnesses)
 	if err != nil {
@@ -247,7 +262,9 @@ func installPlugins(
 			failures = append(failures, fmt.Errorf("%s was not detected", harness))
 			continue
 		}
-		result, installErr := installHarnessPlugin(ctx, harness, executable, environment)
+		result, installErr := installHarnessPlugin(
+			ctx, harness, executable, runtimePath, environment,
+		)
 		results = append(results, result)
 		if installErr != nil {
 			failures = append(failures, installErr)
@@ -305,7 +322,11 @@ func normalizeHarnesses(requested []string) ([]string, bool, error) {
 }
 
 func installHarnessPlugin(
-	ctx context.Context, harness, executable string, environment installEnvironment,
+	ctx context.Context,
+	harness string,
+	executable string,
+	runtimePath string,
+	environment installEnvironment,
 ) (PluginResult, error) {
 	result := PluginResult{
 		Harness:         harness,
@@ -327,8 +348,7 @@ func installHarnessPlugin(
 		}
 	case "cursor":
 		result.Status = "manual_action_required"
-		result.Message = "in Cursor, run /add-plugin CongBao/failure-memory"
-		return result, nil
+		result.Message = "MCP is configured; in Cursor, run /add-plugin CongBao/failure-memory for the skills and hook"
 	default:
 		err = fmt.Errorf("unsupported harness %q", harness)
 	}
@@ -337,8 +357,147 @@ func installHarnessPlugin(
 		result.Message = err.Error()
 		return result, fmt.Errorf("install %s plugin: %w", harness, err)
 	}
-	result.Status = "installed_or_updated"
+	if harness != "cursor" {
+		result.Status = "installed_or_updated"
+	}
+	if err := configureHarnessMCP(
+		ctx, harness, executable, runtimePath, environment,
+	); err != nil {
+		result.Status = "failed"
+		result.Message = err.Error()
+		return result, fmt.Errorf("configure %s MCP server: %w", harness, err)
+	}
+	result.MCPConfigured = true
 	return result, nil
+}
+
+func configureHarnessMCP(
+	ctx context.Context,
+	harness string,
+	executable string,
+	runtimePath string,
+	environment installEnvironment,
+) error {
+	switch harness {
+	case "codex":
+		return replaceCommandMCP(
+			ctx,
+			environment.executor,
+			executable,
+			[]string{"mcp", "remove", MarketplaceName},
+			[]string{
+				"mcp", "add", "--env", "FAILURE_MEMORY_HARNESS=codex",
+				MarketplaceName, "--", runtimePath, "mcp", "--stdio",
+			},
+		)
+	case "claude-code":
+		return replaceCommandMCP(
+			ctx,
+			environment.executor,
+			executable,
+			[]string{"mcp", "remove", MarketplaceName},
+			[]string{
+				"mcp", "add", "--env", "FAILURE_MEMORY_HARNESS=claude-code",
+				"--transport", "stdio", "--scope", "user",
+				MarketplaceName, "--", runtimePath, "mcp", "--stdio",
+			},
+		)
+	case "copilot-cli":
+		return replaceCommandMCP(
+			ctx,
+			environment.executor,
+			executable,
+			[]string{"mcp", "remove", MarketplaceName},
+			[]string{
+				"mcp", "add", MarketplaceName,
+				"--env", "FAILURE_MEMORY_HARNESS=copilot-cli",
+				"--timeout", "10000", "--", runtimePath, "mcp", "--stdio",
+			},
+		)
+	case "cursor":
+		home, err := environment.home()
+		if err != nil {
+			return err
+		}
+		return writeCursorMCP(filepath.Join(home, ".cursor", "mcp.json"), runtimePath)
+	default:
+		return fmt.Errorf("unsupported harness %q", harness)
+	}
+}
+
+func replaceCommandMCP(
+	ctx context.Context,
+	executor commandExecutor,
+	executable string,
+	removeArgs []string,
+	addArgs []string,
+) error {
+	output, err := executor.Run(ctx, executable, removeArgs...)
+	if err != nil && !missingMCP(output) {
+		return fmt.Errorf("remove previous Failure Memory MCP projection: %w", err)
+	}
+	if _, err := executor.Run(ctx, executable, addArgs...); err != nil {
+		return fmt.Errorf("add Failure Memory MCP projection: %w", err)
+	}
+	return nil
+}
+
+func missingMCP(output string) bool {
+	value := strings.ToLower(output)
+	return strings.Contains(value, "not found") ||
+		strings.Contains(value, "does not exist") ||
+		strings.Contains(value, "no server") ||
+		strings.Contains(value, "not configured")
+}
+
+func writeCursorMCP(path string, runtimePath string) error {
+	if err := config.EnsurePrivateDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	configuration := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &configuration); err != nil {
+			return fmt.Errorf("read Cursor MCP configuration: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	servers, _ := configuration["mcpServers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+		configuration["mcpServers"] = servers
+	}
+	servers[MarketplaceName] = map[string]any{
+		"command": runtimePath,
+		"args":    []string{"mcp", "--stdio"},
+		"env": map[string]string{
+			"FAILURE_MEMORY_HARNESS": "cursor",
+		},
+	}
+	return writeJSONAtomically(path, configuration)
+}
+
+func writeJSONAtomically(path string, value any) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".failure-memory-config-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	encoder := json.NewEncoder(temporary)
+	encoder.SetIndent("", "  ")
+	encodeErr := encoder.Encode(value)
+	syncErr := temporary.Sync()
+	closeErr := temporary.Close()
+	if err := errors.Join(encodeErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(temporaryPath, 0o600); err != nil {
+			return err
+		}
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func installCodex(ctx context.Context, executable string, executor commandExecutor) error {
@@ -451,6 +610,12 @@ func findHarnessExecutable(harness string, environment installEnvironment) strin
 }
 
 func DefaultRuntimePath() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("FAILURE_MEMORY_RUNTIME_PATH")); override != "" {
+		if !filepath.IsAbs(override) {
+			return "", errors.New("FAILURE_MEMORY_RUNTIME_PATH must be an absolute path")
+		}
+		return filepath.Clean(override), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

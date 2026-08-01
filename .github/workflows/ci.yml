@@ -29,9 +29,132 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           test -z "$(git ls-files 'docs/**' 'plans/**' 'specs/**')"
+          test ! -e .mcp.json
+          ! git grep -n '"mcpServers"' -- .codex-plugin .claude-plugin .cursor-plugin .plugin
           ! git grep -n '/Users/' -- ':!.github/workflows/ci.yml'
           ! git grep -n '#!/usr/bin/env python' -- ':!docs/**' ':!.github/workflows/ci.yml'
           sh -n scripts/install.sh
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...
+
+  script-quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ShellCheck installer
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/install.sh
+      - name: Analyze PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Error,Warning
+          $findings | Format-Table
+          if ($findings) { throw "PSScriptAnalyzer found installer issues" }
+
+  installer-smoke-unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install a locally served release into an isolated home
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          server=""
+          trap 'if [ -n "$server" ]; then kill "$server" 2>/dev/null || true; fi; rm -rf "$root"' EXIT
+          mkdir -p "$root/assets" "$root/data"
+          go build -o "$root/assets/failure-memory" ./cmd/failure-memory
+          platform=linux
+          if [ "${RUNNER_OS}" = macOS ]; then platform=darwin; fi
+          architecture=amd64
+          if [ "$(uname -m)" = arm64 ]; then architecture=arm64; fi
+          tar -C "$root/assets" -czf "$root/assets/failure-memory_${platform}_${architecture}.tar.gz" failure-memory
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$root/assets" && sha256sum failure-memory_*.tar.gz > checksums.txt)
+          else
+            (cd "$root/assets" && shasum -a 256 failure-memory_*.tar.gz > checksums.txt)
+          fi
+          python3 -m http.server 18765 --bind 127.0.0.1 --directory "$root/assets" >/dev/null 2>&1 &
+          server=$!
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:18765/checksums.txt" >/dev/null; then break; fi
+            sleep 0.1
+          done
+          FAILURE_MEMORY_HOME="$root/data" \
+          FAILURE_MEMORY_RUNTIME_PATH="$root/runtime/failure-memory" \
+          FAILURE_MEMORY_RELEASE_BASE_URL="http://127.0.0.1:18765" \
+          FAILURE_MEMORY_ALLOW_INSECURE_TEST_URL=1 \
+            sh scripts/install.sh --runtime-only
+          FAILURE_MEMORY_HOME="$root/data" "$root/runtime/failure-memory" doctor
+
+  installer-smoke-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install a locally served release into an isolated profile
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid())
+          $assets = Join-Path $root "assets"
+          $data = Join-Path $root "data"
+          $runtime = Join-Path $root "runtime\failure-memory.exe"
+          New-Item -ItemType Directory -Force $assets, $data | Out-Null
+          go build -o (Join-Path $assets "failure-memory.exe") ./cmd/failure-memory
+          $archive = Join-Path $assets "failure-memory_windows_amd64.zip"
+          Compress-Archive -Path (Join-Path $assets "failure-memory.exe") -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  failure-memory_windows_amd64.zip" | Set-Content -Encoding ascii (Join-Path $assets "checksums.txt")
+          $server = Start-Process python -ArgumentList "-m", "http.server", "18765", "--bind", "127.0.0.1", "--directory", $assets -PassThru
+          $beforePath = [Environment]::GetEnvironmentVariable("Path", "User")
+          try {
+            $env:FAILURE_MEMORY_HOME = $data
+            $env:FAILURE_MEMORY_RUNTIME_PATH = $runtime
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri "http://127.0.0.1:18765/checksums.txt" -UseBasicParsing | Out-Null
+                break
+              } catch {
+                Start-Sleep -Milliseconds 100
+              }
+            }
+            $env:FAILURE_MEMORY_RELEASE_BASE_URL = "http://127.0.0.1:1"
+            try { & scripts/install.ps1 -RuntimeOnly } catch { }
+            $afterFailedPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($afterFailedPath -ne $beforePath) { throw "failed installation changed the user PATH" }
+            $env:FAILURE_MEMORY_RELEASE_BASE_URL = "http://127.0.0.1:18765"
+            & scripts/install.ps1 -RuntimeOnly
+            & $runtime doctor
+          } finally {
+            [Environment]::SetEnvironmentVariable("Path", $beforePath, "User")
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+          }
 
   cross-build:
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/gofrs/flock"
 )
 
 const identityKeySize = 32
@@ -90,6 +94,24 @@ func EnsurePrivateDir(path string) error {
 }
 
 func LoadOrCreateIdentityKey(path string) ([]byte, error) {
+	if err := EnsurePrivateDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	lock := flock.New(path + ".lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	locked, err := lock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("lock identity key: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("identity key initialization is busy")
+	}
+	defer func() {
+		_ = lock.Unlock()
+		_ = lock.Close()
+	}()
+
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if len(data) != identityKeySize {
@@ -100,25 +122,33 @@ func LoadOrCreateIdentityKey(path string) ([]byte, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if err := EnsurePrivateDir(filepath.Dir(path)); err != nil {
-		return nil, err
-	}
 	data = make([]byte, identityKeySize)
 	if _, err := rand.Read(data); err != nil {
 		return nil, fmt.Errorf("generate identity key: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".identity-key-*")
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return LoadOrCreateIdentityKey(path)
-		}
 		return nil, err
 	}
+	temporaryPath := file.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if _, writeErr := file.Write(data); writeErr != nil {
 		_ = file.Close()
 		return nil, writeErr
 	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
 	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(temporaryPath, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
 		return nil, err
 	}
 	return data, nil

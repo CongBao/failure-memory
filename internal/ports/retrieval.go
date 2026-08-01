@@ -28,9 +28,11 @@ type VectorCluster struct {
 }
 
 type RetrievalStatus struct {
-	Documents int64 `json:"documents"`
-	Lexical   int64 `json:"lexical"`
-	Vectors   int64 `json:"vectors"`
+	Documents      int64  `json:"documents"`
+	Lexical        int64  `json:"lexical"`
+	Vectors        int64  `json:"vectors"`
+	SourceRevision int64  `json:"source_revision"`
+	ManifestSHA256 string `json:"manifest_sha256"`
 }
 
 type RetrievalIndex interface {
@@ -39,8 +41,9 @@ type RetrievalIndex interface {
 	Profile() string
 	Semantic() bool
 	Status(context.Context) (RetrievalStatus, error)
-	Upsert(context.Context, model.LessonDocument) error
-	Rebuild(context.Context, []model.LessonDocument) error
+	Manifest(context.Context) (string, error)
+	Upsert(context.Context, model.LessonDocument, int64) error
+	Rebuild(context.Context, []model.LessonDocument, int64) error
 	Search(context.Context, model.RecallInput) (SearchResult, error)
 	Clusters(context.Context, float64) ([]VectorCluster, int, error)
 }

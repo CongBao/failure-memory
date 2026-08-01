@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -39,6 +40,7 @@ func fakeEnvironment(executor commandExecutor, paths map[string]string) installE
 			}
 			return "", errors.New("not found")
 		},
+		home:                   func() (string, error) { return "/test-home", nil },
 		goos:                   "linux",
 		copilotDirectInstalled: func() bool { return false },
 	}
@@ -100,13 +102,26 @@ func TestNormalizeHarnessesRejectsAutoCombinedWithNamedHarness(t *testing.T) {
 	}
 }
 
+func TestDefaultRuntimePathAcceptsOnlyAnAbsoluteOverride(t *testing.T) {
+	expected := filepath.Join(t.TempDir(), "managed", "bin", "failure-memory")
+	t.Setenv("FAILURE_MEMORY_RUNTIME_PATH", expected)
+	path, err := DefaultRuntimePath()
+	if err != nil || path != filepath.Clean(expected) {
+		t.Fatalf("DefaultRuntimePath() = %q, %v", path, err)
+	}
+	t.Setenv("FAILURE_MEMORY_RUNTIME_PATH", "relative/failure-memory")
+	if _, err := DefaultRuntimePath(); err == nil {
+		t.Fatal("relative runtime override was accepted")
+	}
+}
+
 func TestInstallPluginsAutoTargetsOnlyDetectedHarnesses(t *testing.T) {
 	codexAdd := "/tools/codex plugin marketplace add " + MarketplaceSource + " --ref main --json"
 	executor := &fakeExecutor{
 		failures: map[string]error{},
 		outputs:  map[string]string{codexAdd: `{"alreadyAdded":false}`},
 	}
-	results, err := installPlugins(context.Background(), nil, fakeEnvironment(executor, map[string]string{
+	results, err := installPlugins(context.Background(), nil, "/runtime/failure-memory", fakeEnvironment(executor, map[string]string{
 		"codex":   "/tools/codex",
 		"copilot": "/tools/copilot",
 	}))
@@ -119,8 +134,18 @@ func TestInstallPluginsAutoTargetsOnlyDetectedHarnesses(t *testing.T) {
 	want := []recordedCommand{
 		{name: "/tools/codex", args: []string{"plugin", "marketplace", "add", MarketplaceSource, "--ref", "main", "--json"}},
 		{name: "/tools/codex", args: []string{"plugin", "add", PluginID, "--json"}},
+		{name: "/tools/codex", args: []string{"mcp", "remove", MarketplaceName}},
+		{name: "/tools/codex", args: []string{
+			"mcp", "add", "--env", "FAILURE_MEMORY_HARNESS=codex", MarketplaceName,
+			"--", "/runtime/failure-memory", "mcp", "--stdio",
+		}},
 		{name: "/tools/copilot", args: []string{"plugin", "marketplace", "add", MarketplaceSource}},
 		{name: "/tools/copilot", args: []string{"plugin", "install", PluginID}},
+		{name: "/tools/copilot", args: []string{"mcp", "remove", MarketplaceName}},
+		{name: "/tools/copilot", args: []string{
+			"mcp", "add", MarketplaceName, "--env", "FAILURE_MEMORY_HARNESS=copilot-cli",
+			"--timeout", "10000", "--", "/runtime/failure-memory", "mcp", "--stdio",
+		}},
 	}
 	if !reflect.DeepEqual(executor.commands, want) {
 		t.Fatalf("commands = %#v, want %#v", executor.commands, want)
@@ -134,13 +159,13 @@ func TestInstallCopilotToleratesAlreadyRegisteredMarketplace(t *testing.T) {
 		outputs:  map[string]string{add: `Marketplace "failure-memory" already registered`},
 	}
 	result, err := installHarnessPlugin(
-		context.Background(), "copilot-cli", "/tools/copilot",
+		context.Background(), "copilot-cli", "/tools/copilot", "/runtime/failure-memory",
 		fakeEnvironment(executor, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "installed_or_updated" || len(executor.commands) != 3 {
+	if result.Status != "installed_or_updated" || !result.MCPConfigured || len(executor.commands) != 5 {
 		t.Fatalf("result = %#v, commands = %#v", result, executor.commands)
 	}
 }
@@ -152,13 +177,13 @@ func TestInstallCodexRefreshesAnExistingMarketplace(t *testing.T) {
 		outputs:  map[string]string{add: `{"alreadyAdded":true}`},
 	}
 	result, err := installHarnessPlugin(
-		context.Background(), "codex", "/tools/codex",
+		context.Background(), "codex", "/tools/codex", "/runtime/failure-memory",
 		fakeEnvironment(executor, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "installed_or_updated" || len(executor.commands) != 3 {
+	if result.Status != "installed_or_updated" || !result.MCPConfigured || len(executor.commands) != 5 {
 		t.Fatalf("result = %#v, commands = %#v", result, executor.commands)
 	}
 	if !reflect.DeepEqual(executor.commands[1], recordedCommand{
@@ -176,7 +201,7 @@ func TestInstallPluginReportsUnexpectedMarketplaceFailure(t *testing.T) {
 		outputs:  map[string]string{add: "network unavailable"},
 	}
 	result, err := installHarnessPlugin(
-		context.Background(), "claude-code", "/tools/claude",
+		context.Background(), "claude-code", "/tools/claude", "/runtime/failure-memory",
 		fakeEnvironment(executor, nil),
 	)
 	if err == nil || result.Status != "failed" || len(executor.commands) != 1 {
@@ -186,14 +211,16 @@ func TestInstallPluginReportsUnexpectedMarketplaceFailure(t *testing.T) {
 
 func TestCursorReturnsOneExplicitManualStep(t *testing.T) {
 	executor := &fakeExecutor{failures: map[string]error{}, outputs: map[string]string{}}
+	environment := fakeEnvironment(executor, nil)
+	environment.home = func() (string, error) { return t.TempDir(), nil }
 	result, err := installHarnessPlugin(
-		context.Background(), "cursor", "/tools/cursor",
-		fakeEnvironment(executor, nil),
+		context.Background(), "cursor", "/tools/cursor", "/runtime/failure-memory",
+		environment,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "manual_action_required" || !strings.Contains(result.Message, "/add-plugin") {
+	if result.Status != "manual_action_required" || !result.MCPConfigured || !strings.Contains(result.Message, "/add-plugin") {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(executor.commands) != 0 {
@@ -206,7 +233,7 @@ func TestInstallCopilotMigratesDeprecatedDirectInstallation(t *testing.T) {
 	environment := fakeEnvironment(executor, nil)
 	environment.copilotDirectInstalled = func() bool { return true }
 	result, err := installHarnessPlugin(
-		context.Background(), "copilot-cli", "/tools/copilot", environment,
+		context.Background(), "copilot-cli", "/tools/copilot", "/runtime/failure-memory", environment,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -214,9 +241,66 @@ func TestInstallCopilotMigratesDeprecatedDirectInstallation(t *testing.T) {
 	if !strings.Contains(result.Message, "replaced") {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(executor.commands) != 3 || !reflect.DeepEqual(executor.commands[0], recordedCommand{
+	if len(executor.commands) != 5 || !reflect.DeepEqual(executor.commands[0], recordedCommand{
 		name: "/tools/copilot", args: []string{"plugin", "uninstall", "failure-memory"},
 	}) {
 		t.Fatalf("commands = %#v", executor.commands)
+	}
+}
+
+func TestWriteCursorMCPPreservesUnrelatedServersAndUsesAbsoluteRuntime(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".cursor", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{
+		"mcpServers": {
+			"other": {"command": "/other/server", "args": []}
+		},
+		"unrelated": true
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := filepath.Join(home, "bin", "failure-memory")
+	if err := writeCursorMCP(path, runtimePath); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration map[string]any
+	if err := json.Unmarshal(data, &configuration); err != nil {
+		t.Fatal(err)
+	}
+	servers := configuration["mcpServers"].(map[string]any)
+	if servers["other"] == nil || configuration["unrelated"] != true {
+		t.Fatalf("unrelated Cursor configuration was changed: %#v", configuration)
+	}
+	failureMemory := servers[MarketplaceName].(map[string]any)
+	if failureMemory["command"] != runtimePath {
+		t.Fatalf("Failure Memory command = %#v", failureMemory["command"])
+	}
+}
+
+func TestMCPProjectionToleratesAFirstInstallation(t *testing.T) {
+	remove := "/tools/codex mcp remove " + MarketplaceName
+	executor := &fakeExecutor{
+		failures: map[string]error{remove: errors.New("exit status 1")},
+		outputs:  map[string]string{remove: "MCP server not found"},
+	}
+	err := configureHarnessMCP(
+		context.Background(),
+		"codex",
+		"/tools/codex",
+		"/absolute/failure-memory",
+		fakeEnvironment(executor, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.commands) != 2 {
+		t.Fatalf("MCP projection commands = %#v", executor.commands)
 	}
 }

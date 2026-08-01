@@ -1,6 +1,6 @@
 {
   "name": "failure-memory",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Share evidence-backed failure lessons across agents without saving requirement changes as mistakes.",
   "author": {
     "name": "CongBao",
@@ -16,6 +16,5 @@
     "recall"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/claude-hooks.json",
-  "mcpServers": "./.mcp.json"
+  "hooks": "./hooks/claude-hooks.json"
 }

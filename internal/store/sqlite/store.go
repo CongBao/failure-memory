@@ -14,16 +14,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	_ "modernc.org/sqlite"
 	_ "modernc.org/sqlite/vec"
 
 	"github.com/CongBao/failure-memory/internal/config"
 	"github.com/CongBao/failure-memory/internal/identity"
+	"github.com/CongBao/failure-memory/internal/lessonmanifest"
 	"github.com/CongBao/failure-memory/internal/model"
 	"github.com/CongBao/failure-memory/internal/policy"
 )
 
-const schema = `
+const schemaV1 = `
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS store_metadata (
@@ -142,10 +144,11 @@ END;
 `
 
 type Store struct {
-	db      *sql.DB
-	path    string
-	context model.Context
-	storeID string
+	db        *sql.DB
+	path      string
+	context   model.Context
+	storeID   string
+	usageLock *flock.Flock
 }
 
 type RecordResult struct {
@@ -156,6 +159,7 @@ type RecordResult struct {
 	RepairID        string
 	Deduplication   string
 	RelatedVersions []string
+	LessonRevision  int64
 }
 
 type RecallCandidate struct {
@@ -170,36 +174,53 @@ func Open(path string, runtimeContext model.Context) (*Store, error) {
 	if err := config.EnsurePrivateDir(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("create event-store directory: %w", err)
 	}
+	if err := recoverInterruptedRestore(path); err != nil {
+		return nil, err
+	}
+	openContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	usageLock := flock.New(path + ".usage.lock")
+	locked, err := usageLock.TryRLockContext(openContext, 25*time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("lock event store for use: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("event store is exclusively locked for maintenance")
+	}
+	releaseUsageLock := func() {
+		_ = usageLock.Unlock()
+		_ = usageLock.Close()
+	}
 	dsn := fmt.Sprintf(
-		"file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		"file:%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)",
 		filepath.ToSlash(path),
 	)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
+		releaseUsageLock()
 		return nil, fmt.Errorf("open event store: %w", err)
 	}
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(openContext); err != nil {
 		_ = db.Close()
+		releaseUsageLock()
 		return nil, fmt.Errorf("ping event store: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("initialize event store: %w", err)
 	}
 	if err := makePrivate(path); err != nil {
 		_ = db.Close()
+		releaseUsageLock()
 		return nil, err
 	}
-	storeID, err := ensureMetadata(db)
+	storeID, err := initializeAndMigrate(openContext, db, path)
 	if err != nil {
 		_ = db.Close()
+		releaseUsageLock()
 		return nil, err
 	}
-	return &Store{db: db, path: path, context: runtimeContext, storeID: storeID}, nil
+	return &Store{
+		db: db, path: path, context: runtimeContext, storeID: storeID, usageLock: usageLock,
+	}, nil
 }
 
 func makePrivate(path string) error {
@@ -209,45 +230,13 @@ func makePrivate(path string) error {
 	return nil
 }
 
-func ensureMetadata(db *sql.DB) (string, error) {
-	tx, err := db.Begin()
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(
-		"INSERT OR IGNORE INTO store_metadata(key, value) VALUES ('schema_version', '1')",
-	); err != nil {
-		return "", err
-	}
-	if _, err := tx.Exec(
-		"INSERT OR IGNORE INTO store_metadata(key, value) VALUES ('store_id', ?)",
-		identity.New("store"),
-	); err != nil {
-		return "", err
-	}
-	var schemaVersion, storeID string
-	if err := tx.QueryRow(
-		"SELECT value FROM store_metadata WHERE key = 'schema_version'",
-	).Scan(&schemaVersion); err != nil {
-		return "", err
-	}
-	if schemaVersion != "1" {
-		return "", fmt.Errorf("unsupported event-store schema %q", schemaVersion)
-	}
-	if err := tx.QueryRow(
-		"SELECT value FROM store_metadata WHERE key = 'store_id'",
-	).Scan(&storeID); err != nil {
-		return "", err
-	}
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
-	return storeID, nil
-}
-
 func (s *Store) Close() error {
-	return s.db.Close()
+	dbErr := s.db.Close()
+	var lockErr error
+	if s.usageLock != nil {
+		lockErr = errors.Join(s.usageLock.Unlock(), s.usageLock.Close())
+	}
+	return errors.Join(dbErr, lockErr)
 }
 
 func (s *Store) StoreID() string {
@@ -403,6 +392,9 @@ func (s *Store) Record(
 				return RecordResult{}, err
 			}
 		}
+	}
+	if result.LessonRevision, err = lessonRevisionTx(ctx, tx); err != nil {
+		return RecordResult{}, err
 	}
 
 	result.IncidentID = identity.New("incident")
@@ -812,6 +804,9 @@ func (s *Store) ImportLegacy(
 	); err != nil {
 		return model.LegacyImportResult{}, err
 	}
+	if _, err := syncLessonRevisionTx(ctx, tx); err != nil {
+		return model.LegacyImportResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return model.LegacyImportResult{}, err
 	}
@@ -861,7 +856,15 @@ func (s *Store) AppendRecall(
 }
 
 func (s *Store) ListLessons(ctx context.Context) ([]model.LessonDocument, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return listLessons(ctx, s.db)
+}
+
+type lessonQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func listLessons(ctx context.Context, queryer lessonQueryer) ([]model.LessonDocument, error) {
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT lesson_id, lesson_version_id, signature, title, rule, prevention,
 		       verification, applicability, counterexamples, cause_layer,
 		       failure_mode, component, document, created_at
@@ -898,6 +901,28 @@ func (s *Store) ListLessons(ctx context.Context) ([]model.LessonDocument, error)
 		lessons = append(lessons, lesson)
 	}
 	return lessons, rows.Err()
+}
+
+func (s *Store) LessonSnapshot(
+	ctx context.Context,
+) ([]model.LessonDocument, int64, string, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	revision, err := lessonRevisionTx(ctx, tx)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	lessons, err := listLessons(ctx, tx)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, "", err
+	}
+	return lessons, revision, lessonmanifest.Digest(lessons), nil
 }
 
 func (s *Store) LessonByVersion(ctx context.Context, versionID string) (model.LessonDocument, bool, error) {
@@ -1036,13 +1061,24 @@ func (s *Store) Doctor(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	lessons, revision, manifest, err := s.LessonSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	version, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
 	sort.Strings(bad)
 	return map[string]any{
-		"store_id":          s.storeID,
-		"schema_version":    1,
-		"integrity_check":   integrity,
-		"event_hash_errors": bad,
-		"counts":            counts,
+		"store_id":               s.storeID,
+		"schema_version":         version,
+		"integrity_check":        integrity,
+		"event_hash_errors":      bad,
+		"counts":                 counts,
+		"lesson_revision":        revision,
+		"lesson_manifest_sha256": manifest,
+		"manifest_lesson_count":  len(lessons),
 	}, nil
 }
 

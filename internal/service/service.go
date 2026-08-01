@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/gofrs/flock"
 
 	embeddingadapter "github.com/CongBao/failure-memory/internal/adapters/embedding"
 	"github.com/CongBao/failure-memory/internal/config"
@@ -20,10 +23,14 @@ import (
 )
 
 type Service struct {
-	paths  config.Paths
-	store  *storesqlite.Store
-	index  ports.RetrievalIndex
-	cancel context.CancelFunc
+	paths      config.Paths
+	store      *storesqlite.Store
+	index      ports.RetrievalIndex
+	cancel     context.CancelFunc
+	syncMu     sync.Mutex
+	syncState  string
+	syncError  string
+	background sync.WaitGroup
 }
 
 func Open(transport string) (*Service, error) {
@@ -52,14 +59,21 @@ func Open(transport string) (*Service, error) {
 		return nil, err
 	}
 	var cancel context.CancelFunc
+	service := &Service{
+		paths: paths, store: store, index: index, syncState: "unchecked",
+	}
 	if transport == "mcp" {
 		var warmContext context.Context
 		warmContext, cancel = context.WithCancel(context.Background())
+		service.background.Add(1)
 		go func() {
+			defer service.background.Done()
 			_ = index.Warm(warmContext)
+			_, _ = service.ensureIndex(warmContext, false)
 		}()
 	}
-	return &Service{paths: paths, store: store, index: index, cancel: cancel}, nil
+	service.cancel = cancel
+	return service, nil
 }
 
 func (s *Service) Close() error {
@@ -67,6 +81,7 @@ func (s *Service) Close() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.background.Wait()
 	if s.index != nil {
 		if err := s.index.Close(); err != nil {
 			errorsSeen = append(errorsSeen, err)
@@ -106,8 +121,12 @@ func (s *Service) Remember(ctx context.Context, input model.RememberInput) (mode
 		if lookupErr != nil {
 			semanticStatus = "index_pending"
 		} else if found {
-			if indexErr := s.index.Upsert(ctx, lesson); indexErr != nil {
+			if indexErr := s.index.Upsert(ctx, lesson, recorded.LessonRevision); indexErr != nil {
 				semanticStatus = "index_pending"
+				s.setSyncState("repair_needed", indexErr)
+			} else if synced, syncErr := s.quickIndexSync(ctx); syncErr != nil || !synced {
+				semanticStatus = "index_pending"
+				s.setSyncState("repair_needed", syncErr)
 			}
 		}
 	}
@@ -145,6 +164,9 @@ func (s *Service) Recall(ctx context.Context, input model.RecallInput) (model.Re
 	}
 	if input.TopK < 0 || input.TopK > 3 {
 		return model.RecallResult{}, errors.New("top_k must be between 1 and 3")
+	}
+	if _, err := s.ensureIndex(ctx, false); err != nil {
+		return model.RecallResult{}, fmt.Errorf("repair retrieval index: %w", err)
 	}
 	operationID := identity.New("recallop")
 	searched, err := s.index.Search(ctx, input)
@@ -208,11 +230,11 @@ func (s *Service) Recall(ctx context.Context, input model.RecallInput) (model.Re
 
 func (s *Service) RebuildIndex(ctx context.Context) (map[string]any, error) {
 	started := time.Now()
-	lessons, err := s.store.ListLessons(ctx)
+	lessons, revision, manifest, err := s.store.LessonSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.index.Rebuild(ctx, lessons); err != nil {
+	if err := s.index.Rebuild(ctx, lessons, revision); err != nil {
 		return nil, err
 	}
 	indexStatus, err := s.index.Status(ctx)
@@ -222,7 +244,8 @@ func (s *Service) RebuildIndex(ctx context.Context) (map[string]any, error) {
 	expected := int64(len(lessons))
 	if indexStatus.Documents != expected ||
 		indexStatus.Lexical != expected ||
-		indexStatus.Vectors != expected {
+		indexStatus.Vectors != expected ||
+		indexStatus.SourceRevision != revision {
 		return nil, fmt.Errorf(
 			"retrieval rebuild incomplete: expected %d lessons, got documents=%d lexical=%d vectors=%d",
 			expected,
@@ -231,6 +254,15 @@ func (s *Service) RebuildIndex(ctx context.Context) (map[string]any, error) {
 			indexStatus.Vectors,
 		)
 	}
+	indexManifest, err := s.index.Manifest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if indexManifest != manifest {
+		return nil, errors.New("retrieval rebuild manifest does not match the event store")
+	}
+	indexStatus.ManifestSHA256 = indexManifest
+	s.setSyncState("repaired", nil)
 	return map[string]any{
 		"indexed_lessons": len(lessons),
 		"index_status":    indexStatus,
@@ -248,6 +280,11 @@ func (s *Service) Doctor(ctx context.Context) (map[string]any, error) {
 	result["event_store_path"] = s.paths.EventStore
 	result["retrieval_index_path"] = s.paths.RetrievalIndex
 	result["retrieval_profile"] = s.index.Profile()
+	syncState, syncErr := s.ensureIndex(ctx, true)
+	result["retrieval_sync_state"] = syncState
+	if syncErr != nil {
+		result["retrieval_sync_error"] = syncErr.Error()
+	}
 	indexStatus, err := s.index.Status(ctx)
 	if err != nil {
 		return nil, err
@@ -255,9 +292,19 @@ func (s *Service) Doctor(ctx context.Context) (map[string]any, error) {
 	result["retrieval_index"] = indexStatus
 	counts, _ := result["counts"].(map[string]int64)
 	expected := counts["lessons"]
+	revision, _ := result["lesson_revision"].(int64)
 	indexComplete := indexStatus.Documents == expected &&
 		indexStatus.Lexical == expected &&
-		indexStatus.Vectors == expected
+		indexStatus.Vectors == expected &&
+		indexStatus.SourceRevision == revision
+	indexManifest, manifestErr := s.index.Manifest(ctx)
+	if manifestErr == nil {
+		indexStatus.ManifestSHA256 = indexManifest
+		result["retrieval_index"] = indexStatus
+		if storeManifest, ok := result["lesson_manifest_sha256"].(string); ok {
+			indexComplete = indexComplete && indexManifest == storeManifest
+		}
+	}
 	result["retrieval_index_complete"] = indexComplete
 	semanticStatus := s.semanticStatus()
 	if !indexComplete {
@@ -323,6 +370,9 @@ func (s *Service) ProposeClusters(
 	ctx context.Context,
 	threshold float64,
 ) (model.ClusterRunResult, error) {
+	if _, err := s.ensureIndex(ctx, false); err != nil {
+		return model.ClusterRunResult{}, fmt.Errorf("repair retrieval index: %w", err)
+	}
 	if threshold == 0 {
 		threshold = 0.18
 	}
@@ -395,11 +445,145 @@ func (s *Service) StoreStatus() map[string]any {
 	}
 }
 
+func (s *Service) CreateBackup(
+	ctx context.Context,
+	destination string,
+) (storesqlite.BackupResult, error) {
+	return s.store.CreateBackup(ctx, destination)
+}
+
 func (s *Service) semanticStatus() string {
 	if s.index.Semantic() {
 		return "ready"
 	}
 	return "vector_fallback_nonsemantic"
+}
+
+func (s *Service) quickIndexSync(ctx context.Context) (bool, error) {
+	revision, err := s.store.LessonRevision(ctx)
+	if err != nil {
+		return false, err
+	}
+	status, err := s.index.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	return indexStatusMatches(status, revision), nil
+}
+
+func (s *Service) ensureIndex(ctx context.Context, deep bool) (string, error) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	revision, err := s.store.LessonRevision(ctx)
+	if err != nil {
+		s.setSyncStateLocked("repair_failed", err)
+		return "repair_failed", err
+	}
+	status, err := s.index.Status(ctx)
+	if err != nil {
+		s.setSyncStateLocked("repair_failed", err)
+		return "repair_failed", err
+	}
+	if indexStatusMatches(status, revision) {
+		if !deep {
+			s.setSyncStateLocked("in_sync", nil)
+			return "in_sync", nil
+		}
+		_, _, storeManifest, snapshotErr := s.store.LessonSnapshot(ctx)
+		indexManifest, indexErr := s.index.Manifest(ctx)
+		if snapshotErr == nil && indexErr == nil && storeManifest == indexManifest {
+			s.setSyncStateLocked("in_sync", nil)
+			return "in_sync", nil
+		}
+	}
+
+	reconcileLock := flock.New(s.paths.RetrievalIndex + ".reconcile.lock")
+	locked, err := reconcileLock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		s.setSyncStateLocked("repair_failed", err)
+		return "repair_failed", err
+	}
+	if !locked {
+		err := errors.New("retrieval reconciliation is busy")
+		s.setSyncStateLocked("repair_failed", err)
+		return "repair_failed", err
+	}
+	defer func() {
+		_ = reconcileLock.Unlock()
+		_ = reconcileLock.Close()
+	}()
+
+	s.setSyncStateLocked("repairing", nil)
+	for attempt := 0; attempt < 3; attempt++ {
+		lessons, snapshotRevision, manifest, err := s.store.LessonSnapshot(ctx)
+		if err != nil {
+			s.setSyncStateLocked("repair_failed", err)
+			return "repair_failed", err
+		}
+		status, err := s.index.Status(ctx)
+		if err == nil && indexStatusMatches(status, snapshotRevision) {
+			indexManifest, manifestErr := s.index.Manifest(ctx)
+			if manifestErr == nil && indexManifest == manifest {
+				s.setSyncStateLocked("in_sync", nil)
+				return "in_sync", nil
+			}
+		}
+		if err := s.index.Rebuild(ctx, lessons, snapshotRevision); err != nil {
+			s.setSyncStateLocked("repair_failed", err)
+			return "repair_failed", err
+		}
+		liveRevision, err := s.store.LessonRevision(ctx)
+		if err != nil {
+			s.setSyncStateLocked("repair_failed", err)
+			return "repair_failed", err
+		}
+		if liveRevision != snapshotRevision {
+			continue
+		}
+		status, err = s.index.Status(ctx)
+		if err != nil || !indexStatusMatches(status, snapshotRevision) {
+			if err == nil {
+				err = errors.New("retrieval index counts do not match the event store")
+			}
+			s.setSyncStateLocked("repair_failed", err)
+			return "repair_failed", err
+		}
+		indexManifest, err := s.index.Manifest(ctx)
+		if err != nil || indexManifest != manifest {
+			if err == nil {
+				err = errors.New("retrieval index manifest does not match the event store")
+			}
+			s.setSyncStateLocked("repair_failed", err)
+			return "repair_failed", err
+		}
+		s.setSyncStateLocked("repaired", nil)
+		return "repaired", nil
+	}
+	err = errors.New("event store changed repeatedly during retrieval reconciliation")
+	s.setSyncStateLocked("repair_failed", err)
+	return "repair_failed", err
+}
+
+func indexStatusMatches(status ports.RetrievalStatus, revision int64) bool {
+	return status.Documents == revision &&
+		status.Lexical == revision &&
+		status.Vectors == revision &&
+		status.SourceRevision == revision
+}
+
+func (s *Service) setSyncState(state string, err error) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	s.setSyncStateLocked(state, err)
+}
+
+func (s *Service) setSyncStateLocked(state string, err error) {
+	s.syncState = state
+	s.syncError = ""
+	if err != nil {
+		s.syncError = err.Error()
+	}
 }
 
 func (s *Service) relatedLessons(

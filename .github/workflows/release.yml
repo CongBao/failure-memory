@@ -20,7 +20,22 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
+      - name: Verify release version metadata
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          source_version="$(sed -n 's/^[[:space:]]*Version = "\([^"]*\)"/\1/p' internal/version/version.go)"
+          test "$source_version" = "$expected"
+          for manifest in \
+            .codex-plugin/plugin.json \
+            .claude-plugin/plugin.json \
+            .cursor-plugin/plugin.json \
+            .plugin/plugin.json; do
+            test "$(jq -r .version "$manifest")" = "$expected"
+          done
+          test "$(jq -r .metadata.version .github/plugin/marketplace.json)" = "$expected"
 
   build:
     needs: test
@@ -81,6 +96,15 @@ jobs:
         with:
           path: release
           merge-multiple: true
+      - name: Smoke-test packaged runtime
+        run: |
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          tar -C "$root" -xzf release/failure-memory_linux_amd64.tar.gz
+          FAILURE_MEMORY_HOME="$root/data" "$root/failure-memory" version
+          printf '%s' '{"summary":"release smoke requirement update","classification":"requirement_update"}' \
+            | FAILURE_MEMORY_HOME="$root/data" "$root/failure-memory" remember
+          FAILURE_MEMORY_HOME="$root/data" "$root/failure-memory" doctor
       - name: Checksums
         run: cd release && sha256sum failure-memory_* > checksums.txt
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3

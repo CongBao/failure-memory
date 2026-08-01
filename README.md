@@ -24,7 +24,6 @@ It can:
 | OpenAI Codex | Plugin, record/recall skills, and prompt hooks |
 | Claude Code | Plugin, record/recall skills, and prompt hooks |
 | GitHub Copilot CLI | Plugin, record/recall skills, and prompt hooks |
-| GitHub Copilot Chat in VS Code | Record/recall skills |
 | Cursor | Plugin, record/recall skills, and session hook |
 | Other agents | The two skills plus the local `failure-memory` command |
 
@@ -50,10 +49,12 @@ irm https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/instal
 ```
 
 The installer downloads the release for your platform, verifies its checksum, installs
-one shared `failure-memory` executable, and uses each detected agent's native plugin
-manager. Codex, Claude Code, and GitHub Copilot CLI are completed automatically. If
-Cursor is detected, the installer prints the `/add-plugin` command to run because Cursor
-does not currently expose a stable non-interactive plugin installer.
+one shared `failure-memory` executable, adds the plugin through each detected agent's
+native plugin manager, and registers the two fast MCP tools with the executable's
+absolute path. Codex, Claude Code, and GitHub Copilot CLI are completed automatically.
+If Cursor is detected, its MCP tools are configured automatically and the installer
+prints the `/add-plugin` command needed to enable the skills and hook because Cursor does
+not currently expose a stable non-interactive plugin installer.
 
 To target selected agents on macOS or Linux, pass a comma-separated list:
 
@@ -163,6 +164,8 @@ Useful commands:
 failure-memory doctor
 failure-memory metrics
 failure-memory store-status
+failure-memory backup create
+failure-memory backup verify <backup-directory>
 failure-memory cluster propose
 failure-memory feedback recall
 failure-memory feedback repair
@@ -170,6 +173,16 @@ failure-memory feedback repair
 
 Clustering and feedback commands append proposals or observations. They do not delete,
 silently merge, or automatically promote lessons.
+
+To restore a backup, first stop every agent application using Failure Memory, then run:
+
+```bash
+failure-memory backup restore <backup-directory> --replace
+```
+
+Restore verifies the backup before replacing the store, creates a safety backup of the
+current store, and rebuilds the derived retrieval index. Interrupted restores are
+recovered automatically the next time Failure Memory opens the store.
 
 ## Local data and privacy
 
@@ -180,9 +193,10 @@ live in one owner-private directory:
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/failure-memory`
 - Windows: `%LOCALAPPDATA%\FailureMemory`
 
-Back up the event-store database; derived indexes can be rebuilt. Submit only compact
-evidence. Do not store raw prompts, full transcripts, credentials, or unnecessary
-personal information.
+The event store is authoritative and append-only. Retrieval indexes are disposable and
+reconciled from it automatically, so backups contain only the verified event store and a
+checksum manifest. Submit only compact evidence. Do not store raw prompts, full
+transcripts, credentials, or unnecessary personal information.
 
 ## Development
 

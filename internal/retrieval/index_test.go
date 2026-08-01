@@ -43,14 +43,14 @@ func TestRebuildPreservesExistingIndexWhenEmbeddingPreparationFails(t *testing.T
 	defer func() { _ = index.Close() }()
 
 	original := testLesson("lesson-v1", "original")
-	if err := index.Upsert(ctx, original); err != nil {
+	if err := index.Upsert(ctx, original, 1); err != nil {
 		t.Fatal(err)
 	}
 	index.embedder = &failingEmbedder{base: base, failOn: "second"}
 	err = index.Rebuild(ctx, []model.LessonDocument{
 		testLesson("lesson-v2", "first"),
 		testLesson("lesson-v3", "second"),
-	})
+	}, 2)
 	if err == nil {
 		t.Fatal("rebuild unexpectedly succeeded")
 	}

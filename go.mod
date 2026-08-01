@@ -3,6 +3,7 @@ module github.com/CongBao/failure-memory
 go 1.26.0
 
 require (
+	github.com/gofrs/flock v0.13.0
 	github.com/gomlx/go-huggingface v0.4.0
 	github.com/knights-analytics/hugot v0.7.6
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -14,7 +15,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
-	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/compute v0.0.0-20260716164435-04857206aff7 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-xla v0.3.0 // indirect
