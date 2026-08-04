@@ -194,6 +194,31 @@ func TestInstallCodexRefreshesAnExistingMarketplace(t *testing.T) {
 	}
 }
 
+func TestInstallCodexRefreshesMarketplaceRegisteredWithEquivalentSource(t *testing.T) {
+	add := "/tools/codex plugin marketplace add " + MarketplaceSource + " --ref main --json"
+	executor := &fakeExecutor{
+		failures: map[string]error{add: errors.New("exit status 1")},
+		outputs: map[string]string{add: "marketplace 'failure-memory' is already added " +
+			"from a different source; remove it before adding this source"},
+	}
+	result, err := installHarnessPlugin(
+		context.Background(), "codex", "/tools/codex", "/runtime/failure-memory",
+		fakeEnvironment(executor, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "installed_or_updated" || !result.MCPConfigured || len(executor.commands) != 5 {
+		t.Fatalf("result = %#v, commands = %#v", result, executor.commands)
+	}
+	if !reflect.DeepEqual(executor.commands[1], recordedCommand{
+		name: "/tools/codex",
+		args: []string{"plugin", "marketplace", "upgrade", MarketplaceName, "--json"},
+	}) {
+		t.Fatalf("commands = %#v", executor.commands)
+	}
+}
+
 func TestInstallPluginReportsUnexpectedMarketplaceFailure(t *testing.T) {
 	add := "/tools/claude plugin marketplace add " + MarketplaceSource
 	executor := &fakeExecutor{

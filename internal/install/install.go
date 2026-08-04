@@ -505,6 +505,15 @@ func installCodex(ctx context.Context, executable string, executor commandExecut
 		ctx, executable, "plugin", "marketplace", "add", MarketplaceSource, "--ref", "main", "--json",
 	)
 	if err != nil {
+		if !codexMarketplaceSourceConflict(output) {
+			return err
+		}
+		if _, err := executor.Run(
+			ctx, executable, "plugin", "marketplace", "upgrade", MarketplaceName, "--json",
+		); err != nil {
+			return err
+		}
+		_, err = executor.Run(ctx, executable, "plugin", "add", PluginID, "--json")
 		return err
 	}
 	var addResult struct {
@@ -519,6 +528,13 @@ func installCodex(ctx context.Context, executable string, executor commandExecut
 	}
 	_, err = executor.Run(ctx, executable, "plugin", "add", PluginID, "--json")
 	return err
+}
+
+func codexMarketplaceSourceConflict(output string) bool {
+	value := strings.ToLower(output)
+	return strings.Contains(value, "marketplace") &&
+		strings.Contains(value, "already added") &&
+		strings.Contains(value, "different source")
 }
 
 func installClaude(ctx context.Context, executable string, executor commandExecutor) error {

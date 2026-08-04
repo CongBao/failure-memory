@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-08-04
+
+### Fixed
+
+- Codex installation now refreshes an existing marketplace when the same public
+  repository was previously registered with an equivalent URL form.
+
 ## [0.10.1] - 2026-08-04
 
 ### Fixed
