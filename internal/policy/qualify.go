@@ -52,7 +52,7 @@ func Qualify(input model.RememberInput) Assessment {
 	if input.Observed == nil || blank(input.Observed.Outcome) || blank(input.Observed.Impact) {
 		reasons = append(reasons, "inspectable_mismatch_or_impact_missing")
 	}
-	if input.Cause == nil || blank(input.Cause.Layer) || blank(input.Cause.FailureMode) ||
+	if input.Cause == nil || blank(string(input.Cause.Layer)) || blank(string(input.Cause.FailureMode)) ||
 		blank(input.Cause.Component) || blank(input.Cause.Evidence) ||
 		blank(input.Cause.RecommendedChange) || blank(input.Cause.Verification) {
 		reasons = append(reasons, "controllable_cause_evidence_missing")
@@ -89,43 +89,16 @@ func blank(value string) bool {
 	return strings.TrimSpace(value) == ""
 }
 
-func allowedCauseLayer(value string) bool {
-	return oneOf(value,
-		"skill_instruction",
-		"agent_instruction",
-		"project_instruction",
-		"system_instruction",
-		"hook_policy",
-		"plugin_manifest",
-		"tool_contract",
-		"application_logic",
-		"adapter_runtime",
-		"schema_migration",
-		"test_evaluation_gap",
-		"harness_limitation",
-		"model_behavior",
-		"external_dependency",
-		"unknown",
-	)
+func allowedCauseLayer(value model.CauseLayer) bool {
+	return oneOf(string(value), model.CauseLayerValues()...)
 }
 
-func allowedFailureMode(value string) bool {
-	return oneOf(value,
-		"missing",
-		"ambiguous",
-		"conflicting",
-		"not_loaded",
-		"not_triggered",
-		"ignored",
-		"incorrectly_implemented",
-		"insufficient_validation",
-		"uninspectable",
-		"unknown",
-	)
+func allowedFailureMode(value model.FailureMode) bool {
+	return oneOf(string(value), model.FailureModeValues()...)
 }
 
-func allowedConfidence(value string) bool {
-	return oneOf(value, "high", "medium", "low", "unknown")
+func allowedConfidence(value model.Confidence) bool {
+	return oneOf(string(value), model.ConfidenceValues()...)
 }
 
 func oneOf(value string, allowed ...string) bool {

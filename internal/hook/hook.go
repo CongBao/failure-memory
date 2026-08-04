@@ -14,7 +14,7 @@ const MaxInputBytes = 1 << 20
 
 const sessionGuidance = "Failure Memory: recall once before risky recurring work; record only evidence-backed prior-invariant failures. New requirements, clarifications, preferences, and ordinary refinement are not failures."
 
-const correctionGuidance = "This message may challenge an earlier outcome. Use record-agent-failure once only if a prior invariant, inspectable mismatch, material impact or recurrence risk, controllable root cause, and durable prevention are evidenced. Separate any new requirement."
+const correctionGuidance = "This message may challenge an earlier outcome. Use record-agent-failure only for an evidenced prior-invariant failure and separate new requirements. Normally call once; retry once only after an explicit retryable or pre-execution schema-validation response, never after an ambiguous failure."
 
 type Output struct {
 	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`

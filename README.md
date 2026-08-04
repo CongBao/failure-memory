@@ -115,6 +115,12 @@ If the evidence is insufficient, the case is stored only as a qualification atte
 does not become a lesson. This makes false-positive rates measurable without polluting
 future recall.
 
+The normal path uses one tool call. Cause taxonomies are published in the tool schema,
+and optional confidence accepts both `low`/`medium`/`high` strings and numeric `0..1`
+values. If a deterministic input-validation response explicitly marks the request as
+retryable, the skill may correct only the named fields once. Timeouts and ambiguous
+transport failures are never retried.
+
 If feedback mixes an old failure with a new requirement, only the old-invariant mismatch
 can enter memory. The new requirement remains normal work.
 

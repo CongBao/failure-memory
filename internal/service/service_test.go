@@ -159,6 +159,60 @@ func TestRecallRequiresBoundedEvidence(t *testing.T) {
 	}
 }
 
+func TestRememberOffersOnlyOneBoundedContractCorrection(t *testing.T) {
+	t.Setenv("FAILURE_MEMORY_HOME", t.TempDir())
+	svc, err := Open("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	invalid := testFailure()
+	invalid.Cause.Layer = "skill_tool_contract"
+	invalid.Cause.FailureMode = "schema_mismatch"
+	first, err := svc.Remember(context.Background(), invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != model.Deferred || !first.Retryable || first.Correction == nil {
+		t.Fatalf("first result = %#v", first)
+	}
+	if first.Correction.CorrectionOfCaptureEventID != first.CaptureEventID ||
+		len(first.Correction.AllowedValues["cause.layer"]) == 0 ||
+		len(first.Correction.AllowedValues["cause.failure_mode"]) == 0 {
+		t.Fatalf("correction guidance = %#v", first.Correction)
+	}
+
+	corrected := testFailure()
+	corrected.CorrectionOf = first.CaptureEventID
+	second, err := svc.Remember(context.Background(), corrected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != model.Recorded || second.Retryable || second.LessonID == "" {
+		t.Fatalf("corrected result = %#v", second)
+	}
+
+	stillInvalid := invalid
+	stillInvalid.CorrectionOf = first.CaptureEventID
+	third, err := svc.Remember(context.Background(), stillInvalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Retryable || third.Correction != nil {
+		t.Fatalf("second correction was offered: %#v", third)
+	}
+	counts, err := svc.Metrics(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := counts["counts"].(map[string]int64)
+	if projected["captures"] != 3 || projected["corrections"] != 2 ||
+		projected["lessons"] != 1 || projected["incidents"] != 1 {
+		t.Fatalf("counts = %#v", projected)
+	}
+}
+
 func TestRecallRepairsAnIncompleteDerivedIndex(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("FAILURE_MEMORY_HOME", root)

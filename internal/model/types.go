@@ -1,6 +1,13 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
 
 type Classification string
 
@@ -29,6 +36,119 @@ const (
 	Deferred   RememberStatus = "deferred"
 )
 
+type CauseLayer string
+
+type FailureMode string
+
+type Confidence string
+
+var classificationValues = []string{
+	string(RequirementUpdate),
+	string(RequirementClarification),
+	string(PreferenceUpdate),
+	string(RealFailure),
+	string(Mixed),
+	string(Uncertain),
+}
+
+var causeLayerValues = []string{
+	"skill_instruction",
+	"agent_instruction",
+	"project_instruction",
+	"system_instruction",
+	"hook_policy",
+	"plugin_manifest",
+	"tool_contract",
+	"application_logic",
+	"adapter_runtime",
+	"schema_migration",
+	"test_evaluation_gap",
+	"harness_limitation",
+	"model_behavior",
+	"external_dependency",
+	"unknown",
+}
+
+var failureModeValues = []string{
+	"missing",
+	"ambiguous",
+	"conflicting",
+	"not_loaded",
+	"not_triggered",
+	"ignored",
+	"incorrectly_implemented",
+	"insufficient_validation",
+	"uninspectable",
+	"unknown",
+}
+
+var confidenceValues = []string{"low", "medium", "high", "unknown"}
+
+func ClassificationValues() []string {
+	return append([]string(nil), classificationValues...)
+}
+
+func CauseLayerValues() []string {
+	return append([]string(nil), causeLayerValues...)
+}
+
+func FailureModeValues() []string {
+	return append([]string(nil), failureModeValues...)
+}
+
+func ConfidenceValues() []string {
+	return append([]string(nil), confidenceValues...)
+}
+
+func (c *Confidence) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		text = strings.ToLower(strings.TrimSpace(text))
+		if text == "" {
+			*c = ""
+			return nil
+		}
+		if contains(confidenceValues, text) {
+			*c = Confidence(text)
+			return nil
+		}
+		value, parseErr := strconv.ParseFloat(text, 64)
+		if parseErr != nil {
+			return fmt.Errorf("confidence must be low, medium, high, unknown, or a number from 0 to 1")
+		}
+		return c.setNumeric(value)
+	}
+	var value float64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return errors.New("confidence must be a string or number from 0 to 1")
+	}
+	return c.setNumeric(value)
+}
+
+func (c *Confidence) setNumeric(value float64) error {
+	if value < 0 || value > 1 {
+		return errors.New("numeric confidence must be between 0 and 1")
+	}
+	switch {
+	case value >= 0.8:
+		*c = "high"
+	case value >= 0.5:
+		*c = "medium"
+	default:
+		*c = "low"
+	}
+	return nil
+}
+
+func contains(values []string, value string) bool {
+	for _, candidate := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 type ExpectationEvidence struct {
 	Invariant string `json:"invariant" jsonschema:"The invariant that existed before the outcome."`
 	Source    string `json:"source" jsonschema:"Where the prior invariant was established."`
@@ -42,13 +162,13 @@ type ObservedEvidence struct {
 }
 
 type CauseEvidence struct {
-	Layer             string `json:"layer" jsonschema:"One of skill_instruction, agent_instruction, project_instruction, system_instruction, hook_policy, plugin_manifest, tool_contract, application_logic, adapter_runtime, schema_migration, test_evaluation_gap, harness_limitation, model_behavior, external_dependency, or unknown."`
-	FailureMode       string `json:"failure_mode" jsonschema:"One of missing, ambiguous, conflicting, not_loaded, not_triggered, ignored, incorrectly_implemented, insufficient_validation, uninspectable, or unknown."`
-	Component         string `json:"component" jsonschema:"Specific controllable component."`
-	Evidence          string `json:"evidence" jsonschema:"Evidence supporting this cause rather than speculation."`
-	RecommendedChange string `json:"recommended_change" jsonschema:"Where and how to fix the cause."`
-	Verification      string `json:"verification" jsonschema:"How to verify the repair."`
-	Confidence        string `json:"confidence,omitempty" jsonschema:"low, medium, high, or unknown."`
+	Layer             CauseLayer  `json:"layer" jsonschema:"Canonical controllable cause layer."`
+	FailureMode       FailureMode `json:"failure_mode" jsonschema:"Canonical failure mode."`
+	Component         string      `json:"component" jsonschema:"Specific controllable component."`
+	Evidence          string      `json:"evidence" jsonschema:"Evidence supporting this cause rather than speculation."`
+	RecommendedChange string      `json:"recommended_change" jsonschema:"Where and how to fix the cause."`
+	Verification      string      `json:"verification" jsonschema:"How to verify the repair."`
+	Confidence        Confidence  `json:"confidence,omitempty" jsonschema:"Prefer low, medium, high, or unknown. Numeric 0 to 1 is also accepted and normalized."`
 }
 
 type LessonEvidence struct {
@@ -69,22 +189,30 @@ type RememberInput struct {
 	Cause          *CauseEvidence       `json:"cause,omitempty"`
 	Lesson         *LessonEvidence      `json:"lesson,omitempty"`
 	PriorRecallID  string               `json:"prior_recall_id,omitempty" jsonschema:"A prior recall attempt this failure demonstrates did not prevent recurrence."`
+	CorrectionOf   string               `json:"correction_of_capture_event_id,omitempty" jsonschema:"Set only for the one correction retry requested by a prior retryable response."`
+}
+
+type RememberCorrection struct {
+	CorrectionOfCaptureEventID string              `json:"correction_of_capture_event_id"`
+	AllowedValues              map[string][]string `json:"allowed_values"`
 }
 
 type RememberResult struct {
-	OperationID        string         `json:"operation_id"`
-	Status             RememberStatus `json:"status"`
-	Decision           Decision       `json:"decision"`
-	ReasonCodes        []string       `json:"reason_codes"`
-	Deduplication      string         `json:"deduplication_status"`
-	SemanticStatus     string         `json:"semantic_status"`
-	TotalLatencyMS     int64          `json:"total_latency_ms"`
-	CaptureEventID     string         `json:"capture_event_id"`
-	IncidentID         string         `json:"incident_id,omitempty"`
-	LessonID           string         `json:"lesson_id,omitempty"`
-	LessonVersionID    string         `json:"lesson_version_id,omitempty"`
-	RepairID           string         `json:"repair_recommendation_id,omitempty"`
-	GeneralizationHint string         `json:"generalization_hint,omitempty"`
+	OperationID        string              `json:"operation_id"`
+	Status             RememberStatus      `json:"status"`
+	Decision           Decision            `json:"decision"`
+	ReasonCodes        []string            `json:"reason_codes"`
+	Deduplication      string              `json:"deduplication_status"`
+	SemanticStatus     string              `json:"semantic_status"`
+	TotalLatencyMS     int64               `json:"total_latency_ms"`
+	CaptureEventID     string              `json:"capture_event_id"`
+	IncidentID         string              `json:"incident_id,omitempty"`
+	LessonID           string              `json:"lesson_id,omitempty"`
+	LessonVersionID    string              `json:"lesson_version_id,omitempty"`
+	RepairID           string              `json:"repair_recommendation_id,omitempty"`
+	GeneralizationHint string              `json:"generalization_hint,omitempty"`
+	Retryable          bool                `json:"retryable,omitempty"`
+	Correction         *RememberCorrection `json:"correction,omitempty"`
 }
 
 type RecallInput struct {

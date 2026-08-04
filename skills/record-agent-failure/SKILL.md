@@ -15,7 +15,7 @@ before the outcome:
 - `mixed`: separate only the prior-invariant failure into `failure_portion`; keep new work out of memory.
 - `uncertain`: chronology or required evidence cannot be established.
 
-Once triggered, call `remember_failure` exactly once even when the classification is a
+Once triggered, normally call `remember_failure` once even when the classification is a
 non-failure or `uncertain`; this preserves false-positive qualification telemetry. Those
 classifications use only:
 
@@ -26,9 +26,21 @@ classifications use only:
 For `mixed`, `failure_portion` is a compact string containing only the old-invariant
 mismatch. Real or mixed failures use the exact tool schema: `expectation` has `invariant`,
 `source`, `evidence`; `observed` has `outcome`, `impact`, optional `recurrence_risk`;
-`cause` has `layer`, `failure_mode`, `component`, `evidence`, `recommended_change`,
-`verification`, optional `confidence`; `lesson` has `rule`, `prevention`,
-`verification`, and optional `title`, `applicability`, `counterexamples`.
+`cause` has `layer`, `failure_mode`, `component`, `evidence`, `recommended_change`, and
+`verification`; `lesson` has `rule`, `prevention`, `verification`, and optional `title`,
+`applicability`, `counterexamples`.
+
+Use only these canonical cause values:
+
+- `layer`: `skill_instruction`, `agent_instruction`, `project_instruction`,
+  `system_instruction`, `hook_policy`, `plugin_manifest`, `tool_contract`,
+  `application_logic`, `adapter_runtime`, `schema_migration`, `test_evaluation_gap`,
+  `harness_limitation`, `model_behavior`, `external_dependency`, or `unknown`.
+- `failure_mode`: `missing`, `ambiguous`, `conflicting`, `not_loaded`, `not_triggered`,
+  `ignored`, `incorrectly_implemented`, `insufficient_validation`, `uninspectable`, or
+  `unknown`.
+- `confidence` is optional. Prefer omitting it; when useful, send the string `low`,
+  `medium`, `high`, or `unknown`. Numeric `0..1` is accepted for compatibility.
 
 Treat a user's explicit statement of chronology or a prior invariant as task evidence
 unless available evidence contradicts it. For `cause`, use only evidence already
@@ -40,9 +52,21 @@ inspected only when the failure is otherwise established and an evidenced compon
 boundary, prevention, and verification can still be stated. If no controllable boundary
 or durable prevention can be supported, classify `uncertain`.
 
+Use at most one correction retry, and only in either of these deterministic cases:
+
+1. The call returns `retryable: true` with `correction.allowed_values`. Correct only the
+   named fields, copy `correction.correction_of_capture_event_id` into
+   `correction_of_capture_event_id`, and call once more.
+2. The tool reports an explicit input/schema validation rejection before execution.
+   Correct only the rejected field from the published values and call once more; do not
+   set `correction_of_capture_event_id` because no capture was created.
+
+Never retry after a timeout, connection loss, cancellation, ambiguous tool error,
+`recorded`, `not_failure`, or a non-retryable `deferred` result. Never make a third call.
+
 Only when the tool capability is absent before invocation, pass the same JSON on standard
-input to `failure-memory remember` once. Do not use the fallback after a timeout or
-ambiguous tool failure. Do not search for the plugin, inspect SQLite, discover runtimes,
-retry commands, or create a temporary file.
+input to `failure-memory remember`. The same bounded correction rule applies to that
+fallback. Do not use the fallback after a tool timeout or ambiguous failure. Do not search
+for the plugin, inspect SQLite, discover runtimes, or create a temporary file.
 
 Exclude raw prompts, secrets, personal data, transcripts, and unnecessary paths. Briefly report the returned status; every new or generalized lesson remains a proposal until reviewed.

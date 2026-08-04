@@ -1,5 +1,5 @@
 {
-  "contract_version": 6,
+  "contract_version": 7,
   "policy_kind": "record_failure",
   "skill": {
     "name": "record-agent-failure",
@@ -33,10 +33,28 @@
       "unnecessary user text",
       "unnecessary paths"
     ],
-    "single_call": true,
+    "normal_call_limit": 1,
+    "maximum_call_attempts": 2,
+    "correction_retry_limit": 1,
+    "correction_retry_only_when": [
+      "The prior result has retryable=true and correction.allowed_values; copy its capture ID into correction_of_capture_event_id.",
+      "The transport explicitly reports input/schema validation before tool execution; correct only the rejected field and do not set a correction capture ID."
+    ],
+    "correction_link_field": "correction_of_capture_event_id",
+    "record_correction_telemetry": true,
+    "never_retry_after": [
+      "timeout",
+      "connection loss",
+      "cancellation",
+      "ambiguous tool error",
+      "recorded result",
+      "not_failure result",
+      "non-retryable deferred result"
+    ],
     "trigger_boundary": "Only challenged prior outcomes, recurrence reports, or explicit failure qualification/learning requests enter this workflow. Ordinary new requirements and refinements do not.",
     "record_qualification_attempts": true,
-    "fallback_call_limit": 1,
+    "fallback_normal_call_limit": 1,
+    "fallback_maximum_call_attempts": 2,
     "fallback_only_when": "The named tool capability is absent before invocation; never after timeout or ambiguous failure.",
     "failure_object_fields": {
       "expectation": {
@@ -56,7 +74,44 @@
           "recommended_change",
           "verification"
         ],
-        "optional": ["confidence"]
+        "optional": ["confidence"],
+        "types": {
+          "layer": "canonical string enum",
+          "failure_mode": "canonical string enum",
+          "confidence": "optional low|medium|high|unknown string; numeric 0..1 is accepted and normalized"
+        },
+        "allowed_values": {
+          "layer": [
+            "skill_instruction",
+            "agent_instruction",
+            "project_instruction",
+            "system_instruction",
+            "hook_policy",
+            "plugin_manifest",
+            "tool_contract",
+            "application_logic",
+            "adapter_runtime",
+            "schema_migration",
+            "test_evaluation_gap",
+            "harness_limitation",
+            "model_behavior",
+            "external_dependency",
+            "unknown"
+          ],
+          "failure_mode": [
+            "missing",
+            "ambiguous",
+            "conflicting",
+            "not_loaded",
+            "not_triggered",
+            "ignored",
+            "incorrectly_implemented",
+            "insufficient_validation",
+            "uninspectable",
+            "unknown"
+          ],
+          "confidence": ["low", "medium", "high", "unknown"]
+        }
       },
       "lesson": {
         "required": ["rule", "prevention", "verification"],

@@ -2,7 +2,9 @@ package mcpserver
 
 import (
 	"context"
+	"reflect"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/CongBao/failure-memory/internal/model"
@@ -24,7 +26,7 @@ func New(svc *service.Service) *mcp.Server {
 			WebsiteURL:  "https://github.com/CongBao/failure-memory",
 		},
 		&mcp.ServerOptions{
-			Instructions: "Use remember_failure only for evidence-backed qualification, including non-failure classifications. Use recall_failure_lessons once with bounded task evidence. Never submit raw prompts, secrets, or unnecessary user text.",
+			Instructions: "Use remember_failure only for evidence-backed qualification. Normally call it once; correct once only after retryable=true or explicit pre-execution schema validation, never after an ambiguous failure. Use recall_failure_lessons once with bounded task evidence. Never submit raw prompts, secrets, or unnecessary user text.",
 			Capabilities: &mcp.ServerCapabilities{},
 		},
 	)
@@ -35,7 +37,8 @@ func New(svc *service.Service) *mcp.Server {
 		&mcp.Tool{
 			Name:        "remember_failure",
 			Title:       "Remember a failure",
-			Description: "Qualify one correction and append a real failure, root cause, repair, deduplication result, lesson, and telemetry only when evidence warrants it.",
+			Description: "Qualify one correction and append a real failure, root cause, repair, deduplication result, lesson, and telemetry only when evidence warrants it. A deterministic validation mismatch may return one machine-guided correction.",
+			InputSchema: rememberInputSchema(),
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Remember a failure",
 				ReadOnlyHint:    false,
@@ -69,4 +72,34 @@ func New(svc *service.Service) *mcp.Server {
 		},
 	)
 	return server
+}
+
+func rememberInputSchema() *jsonschema.Schema {
+	stringEnum := func(values []string) *jsonschema.Schema {
+		items := make([]any, len(values))
+		for index, value := range values {
+			items[index] = value
+		}
+		return &jsonschema.Schema{Type: "string", Enum: items}
+	}
+	options := &jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[model.Classification](): stringEnum(model.ClassificationValues()),
+		reflect.TypeFor[model.CauseLayer]():     stringEnum(model.CauseLayerValues()),
+		reflect.TypeFor[model.FailureMode]():    stringEnum(model.FailureModeValues()),
+		reflect.TypeFor[model.Confidence](): {
+			AnyOf: []*jsonschema.Schema{
+				stringEnum(model.ConfidenceValues()),
+				{
+					Type:    "number",
+					Minimum: jsonschema.Ptr(0.0),
+					Maximum: jsonschema.Ptr(1.0),
+				},
+			},
+		},
+	}}
+	schema, err := jsonschema.For[model.RememberInput](options)
+	if err != nil {
+		panic(err)
+	}
+	return schema
 }

@@ -22,6 +22,10 @@ func TestPromptHookOnlyInjectsForLikelyCorrection(t *testing.T) {
 	if err != nil || !emit || corrective.HookSpecificOutput == nil {
 		t.Fatalf("correction missed: %#v, %v, %v", corrective, emit, err)
 	}
+	if !strings.Contains(corrective.HookSpecificOutput.AdditionalContext, "retry once only") ||
+		!strings.Contains(corrective.HookSpecificOutput.AdditionalContext, "never after an ambiguous") {
+		t.Fatalf("correction guidance lacks bounded retry safety: %#v", corrective)
+	}
 }
 
 func TestMalformedHookInputFailsOpen(t *testing.T) {

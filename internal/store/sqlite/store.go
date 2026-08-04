@@ -263,18 +263,19 @@ func (s *Store) Record(
 	defer func() { _ = tx.Rollback() }()
 
 	capturePayload := map[string]any{
-		"summary":         input.Summary,
-		"classification":  input.Classification,
-		"failure_portion": input.FailurePortion,
-		"decision":        assessment.Decision,
-		"reason_codes":    assessment.ReasonCodes,
-		"expectation":     input.Expectation,
-		"observed":        input.Observed,
-		"cause":           input.Cause,
-		"proposed_lesson": input.Lesson,
-		"prior_recall_id": input.PriorRecallID,
-		"redaction_state": "applied",
-		"qualification_v": 1,
+		"summary":                        input.Summary,
+		"classification":                 input.Classification,
+		"failure_portion":                input.FailurePortion,
+		"decision":                       assessment.Decision,
+		"reason_codes":                   assessment.ReasonCodes,
+		"expectation":                    input.Expectation,
+		"observed":                       input.Observed,
+		"cause":                          input.Cause,
+		"proposed_lesson":                input.Lesson,
+		"prior_recall_id":                input.PriorRecallID,
+		"correction_of_capture_event_id": input.CorrectionOf,
+		"redaction_state":                "applied",
+		"qualification_v":                1,
 	}
 	captureEventID, err := s.appendEvent(tx, "capture_evaluated", operationID, capturePayload)
 	if err != nil {
@@ -962,11 +963,12 @@ func (s *Store) LessonByVersion(ctx context.Context, versionID string) (model.Le
 func (s *Store) Counts(ctx context.Context) (map[string]int64, error) {
 	result := map[string]int64{}
 	for name, query := range map[string]string{
-		"events":    "SELECT COUNT(*) FROM event_log",
-		"incidents": "SELECT COUNT(*) FROM incident_projection",
-		"lessons":   "SELECT COUNT(*) FROM lesson_projection",
-		"captures":  "SELECT COUNT(*) FROM event_log WHERE event_type = 'capture_evaluated'",
-		"recalls":   "SELECT COUNT(*) FROM event_log WHERE event_type = 'recall_attempted'",
+		"events":      "SELECT COUNT(*) FROM event_log",
+		"incidents":   "SELECT COUNT(*) FROM incident_projection",
+		"lessons":     "SELECT COUNT(*) FROM lesson_projection",
+		"captures":    "SELECT COUNT(*) FROM event_log WHERE event_type = 'capture_evaluated'",
+		"corrections": "SELECT COUNT(*) FROM event_log WHERE event_type = 'capture_evaluated' AND COALESCE(json_extract(payload_json, '$.correction_of_capture_event_id'), '') <> ''",
+		"recalls":     "SELECT COUNT(*) FROM event_log WHERE event_type = 'recall_attempted'",
 	} {
 		var count int64
 		if err := s.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
@@ -1202,8 +1204,8 @@ func CanonicalSignature(input model.RememberInput) string {
 	}
 	parts := []string{
 		input.Expectation.Invariant,
-		input.Cause.Layer,
-		input.Cause.FailureMode,
+		string(input.Cause.Layer),
+		string(input.Cause.FailureMode),
 		input.Cause.Component,
 		input.Lesson.Rule,
 	}

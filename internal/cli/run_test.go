@@ -56,6 +56,76 @@ func TestBackupCommandsRoundTripTheAuthoritativeStore(t *testing.T) {
 	}
 }
 
+func TestRememberFallbackAcceptsNumericConfidence(t *testing.T) {
+	t.Setenv("FAILURE_MEMORY_HOME", t.TempDir())
+	t.Setenv("FAILURE_MEMORY_HARNESS", "cli-test")
+	payload, err := json.Marshal(cliFailureInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal(payload, &input); err != nil {
+		t.Fatal(err)
+	}
+	input["cause"].(map[string]any)["confidence"] = 0.9
+	payload, err = json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runForTest([]string{"remember"}, payload)
+	if code != 0 {
+		t.Fatalf("remember: code=%d stderr=%s", code, stderr)
+	}
+	var result model.RememberResult
+	if err := json.Unmarshal(stdout, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != model.Recorded || result.LessonID == "" || result.Retryable {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRememberFallbackReturnsOneMachineGuidedCorrection(t *testing.T) {
+	t.Setenv("FAILURE_MEMORY_HOME", t.TempDir())
+	t.Setenv("FAILURE_MEMORY_HARNESS", "cli-test")
+	invalid := cliFailureInput()
+	invalid.Cause.Layer = "skill_tool_contract"
+	invalid.Cause.FailureMode = "schema_mismatch"
+	payload, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runForTest([]string{"remember"}, payload)
+	if code != 0 {
+		t.Fatalf("first remember: code=%d stderr=%s", code, stderr)
+	}
+	var first model.RememberResult
+	if err := json.Unmarshal(stdout, &first); err != nil {
+		t.Fatal(err)
+	}
+	if !first.Retryable || first.Correction == nil || first.CaptureEventID == "" {
+		t.Fatalf("first result = %#v", first)
+	}
+
+	corrected := cliFailureInput()
+	corrected.CorrectionOf = first.CaptureEventID
+	payload, err = json.Marshal(corrected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runForTest([]string{"remember"}, payload)
+	if code != 0 {
+		t.Fatalf("corrected remember: code=%d stderr=%s", code, stderr)
+	}
+	var second model.RememberResult
+	if err := json.Unmarshal(stdout, &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != model.Recorded || second.Retryable || second.LessonID == "" {
+		t.Fatalf("corrected result = %#v", second)
+	}
+}
+
 func runForTest(arguments []string, input []byte) (int, []byte, []byte) {
 	var stdout, stderr bytes.Buffer
 	code := Run(arguments, bytes.NewReader(input), &stdout, &stderr)

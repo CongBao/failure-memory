@@ -33,6 +33,7 @@ func Remember(input model.RememberInput) model.RememberInput {
 	input.Summary = Text(input.Summary)
 	input.FailurePortion = Text(input.FailurePortion)
 	input.PriorRecallID = Text(input.PriorRecallID)
+	input.CorrectionOf = Text(input.CorrectionOf)
 	if input.Expectation != nil {
 		copy := *input.Expectation
 		copy.Invariant = Text(copy.Invariant)
@@ -49,13 +50,13 @@ func Remember(input model.RememberInput) model.RememberInput {
 	}
 	if input.Cause != nil {
 		copy := *input.Cause
-		copy.Layer = Text(copy.Layer)
-		copy.FailureMode = Text(copy.FailureMode)
+		copy.Layer = model.CauseLayer(Text(string(copy.Layer)))
+		copy.FailureMode = model.FailureMode(Text(string(copy.FailureMode)))
 		copy.Component = Text(copy.Component)
 		copy.Evidence = Text(copy.Evidence)
 		copy.RecommendedChange = Text(copy.RecommendedChange)
 		copy.Verification = Text(copy.Verification)
-		copy.Confidence = Text(copy.Confidence)
+		copy.Confidence = model.Confidence(Text(string(copy.Confidence)))
 		input.Cause = &copy
 	}
 	if input.Lesson != nil {

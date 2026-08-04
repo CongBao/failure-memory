@@ -144,6 +144,12 @@ func (s *Service) Remember(ctx context.Context, input model.RememberInput) (mode
 		LessonVersionID: recorded.LessonVersionID,
 		RepairID:        recorded.RepairID,
 	}
+	result.Correction = rememberCorrection(
+		input.CorrectionOf,
+		recorded.CaptureEventID,
+		assessment.ReasonCodes,
+	)
+	result.Retryable = result.Correction != nil
 	if recorded.Deduplication == "related_pending_generalization" {
 		result.GeneralizationHint = "Related lessons were retained separately and queued for generalization review."
 	}
@@ -626,6 +632,35 @@ func normalized(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
+func rememberCorrection(
+	correctionOf string,
+	captureEventID string,
+	reasonCodes []string,
+) *model.RememberCorrection {
+	if strings.TrimSpace(correctionOf) != "" || captureEventID == "" || len(reasonCodes) == 0 {
+		return nil
+	}
+	allowed := map[string][]string{}
+	for _, reason := range reasonCodes {
+		switch reason {
+		case "invalid_classification":
+			allowed["classification"] = model.ClassificationValues()
+		case "cause_layer_invalid":
+			allowed["cause.layer"] = model.CauseLayerValues()
+		case "failure_mode_invalid":
+			allowed["cause.failure_mode"] = model.FailureModeValues()
+		case "cause_confidence_invalid":
+			allowed["cause.confidence"] = model.ConfidenceValues()
+		default:
+			return nil
+		}
+	}
+	return &model.RememberCorrection{
+		CorrectionOfCaptureEventID: captureEventID,
+		AllowedValues:              allowed,
+	}
+}
+
 func buildDocument(input model.RememberInput, signature string) *model.LessonDocument {
 	cause := input.Cause
 	lesson := input.Lesson
@@ -643,8 +678,8 @@ func buildDocument(input model.RememberInput, signature string) *model.LessonDoc
 		expectation.Invariant,
 		observed.Outcome,
 		observed.Impact,
-		cause.Layer,
-		cause.FailureMode,
+		string(cause.Layer),
+		string(cause.FailureMode),
 		cause.Component,
 		cause.Evidence,
 		cause.RecommendedChange,
@@ -662,8 +697,8 @@ func buildDocument(input model.RememberInput, signature string) *model.LessonDoc
 		Verification:    lesson.Verification,
 		Applicability:   lesson.Applicability,
 		Counterexamples: lesson.Counterexamples,
-		CauseLayer:      cause.Layer,
-		FailureMode:     cause.FailureMode,
+		CauseLayer:      string(cause.Layer),
+		FailureMode:     string(cause.FailureMode),
 		Component:       cause.Component,
 		Document:        document,
 		CreatedAt:       time.Now().UTC(),

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-04
+
+### Fixed
+
+- Numeric `0..1` cause confidence values are accepted and normalized consistently by
+  MCP and CLI recording paths.
+- The public tool schema now exposes the allowed classification, cause-layer, and
+  failure-mode values instead of leaving callers to infer hidden runtime enums.
+- Deterministic input-validation rejections can return one machine-guided correction;
+  the skill still forbids retries after timeouts, ambiguous failures, or persisted
+  outcomes.
+
 ## [0.10.0] - 2026-08-01
 
 ### Added
