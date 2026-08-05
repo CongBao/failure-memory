@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Recall Failure Lessons</title>
+  <desc id="description">A relevant failed event rises from durable memory into the current task.</desc>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 244V57" stroke="#0D9488" stroke-width="46"/>
+    <path d="m188 125 68-68 68 68" stroke="#0D9488" stroke-width="46"/>
+    <rect x="103" y="292" width="306" height="145" rx="47" stroke="#64748B" stroke-width="42"/>
+    <path d="M256 323v48" stroke="#C2413B" stroke-width="24"/>
+    <circle cx="256" cy="405" r="13" fill="#C2413B"/>
+  </g>
+</svg>

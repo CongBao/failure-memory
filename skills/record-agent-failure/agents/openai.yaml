@@ -1,4 +1,7 @@
 interface:
   display_name: "Record Agent Failure"
   short_description: "Qualify and record durable agent failures"
+  icon_small: "./assets/icon-small.svg"
+  icon_large: "./assets/icon-large.svg"
+  brand_color: "#C2413B"
   default_prompt: "Use $record-agent-failure to qualify this correction and record it only if it is a real durable failure."

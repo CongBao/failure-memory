@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">Failure Memory</title>
+  <desc id="description">A compact capture and recall loop around a failed record.</desc>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M37 22C20 34 15 57 24 76" stroke="#C2413B" stroke-width="11"/>
+    <path d="m16 68 8 8 9-8" stroke="#C2413B" stroke-width="11"/>
+    <path d="M91 106c17-12 22-35 13-54" stroke="#0D9488" stroke-width="11"/>
+    <path d="m112 60-8-8-9 8" stroke="#0D9488" stroke-width="11"/>
+    <rect x="40" y="28" width="48" height="72" rx="11" stroke="#64748B" stroke-width="10"/>
+    <path d="M64 44v28" stroke="#C2413B" stroke-width="9"/>
+    <circle cx="64" cy="86" r="5" fill="#C2413B"/>
+  </g>
+</svg>

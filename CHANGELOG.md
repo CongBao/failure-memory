@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-05
+
+### Added
+
+- A compact Failure Memory brand system with dedicated plugin, recording, and
+  recall icons, including light- and dark-surface plugin artwork.
+- Codex plugin and skill metadata now reference the packaged visual assets and
+  use distinct failure and recall accent colors; Cursor's plugin manifest uses
+  the shared logo through its native `logo` field.
+
 ## [0.10.2] - 2026-08-04
 
 ### Fixed

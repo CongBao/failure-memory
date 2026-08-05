@@ -1,6 +1,6 @@
 {
   "name": "failure-memory",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Share evidence-backed failure lessons across agents without saving requirement changes as mistakes.",
   "author": {
     "name": "CongBao",
@@ -29,6 +29,10 @@
     "defaultPrompt": [
       "Evaluate whether this correction is a real failure.",
       "Recall relevant lessons before I continue."
-    ]
+    ],
+    "brandColor": "#C2413B",
+    "composerIcon": "./assets/composer-icon.svg",
+    "logo": "./assets/logo.svg",
+    "logoDark": "./assets/logo-dark.svg"
   }
 }

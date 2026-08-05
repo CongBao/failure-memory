@@ -1,4 +1,7 @@
 interface:
   display_name: "Recall Failure Lessons"
   short_description: "Recall bounded lessons before risky work"
+  icon_small: "./assets/icon-small.svg"
+  icon_large: "./assets/icon-large.svg"
+  brand_color: "#0D9488"
   default_prompt: "Use $recall-failure-lessons to make one evidence-gated, exact-first recall before proceeding with this risky task."

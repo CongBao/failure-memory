@@ -1,14 +1,16 @@
 {
   "name": "failure-memory",
-  "version": "0.10.2",
+  "displayName": "Failure Memory",
+  "version": "0.10.3",
   "description": "Share evidence-backed failure lessons across agents without saving requirement changes as mistakes.",
   "author": {
     "name": "CongBao",
-    "url": "https://github.com/CongBao"
+    "email": "bao_cong@outlook.com"
   },
   "homepage": "https://github.com/CongBao/failure-memory#readme",
   "repository": "https://github.com/CongBao/failure-memory",
   "license": "MIT",
+  "logo": "assets/logo.svg",
   "keywords": [
     "agent-memory",
     "failure-learning",
