@@ -1,13 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
   <title id="title">Failure Memory</title>
-  <desc id="description">A failed record marked by an exclamation point between capture and recall arrows.</desc>
+  <desc id="description">A failed record marked by a red cross between capture and recall arrows.</desc>
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path d="M137 105C77 151 53 235 84 313" stroke="#C2413B" stroke-width="38"/>
     <path d="m54 286 30 27 27-31" stroke="#C2413B" stroke-width="38"/>
     <path d="M375 407c60-46 84-130 53-208" stroke="#0F766E" stroke-width="38"/>
     <path d="m458 226-30-27-27 31" stroke="#0F766E" stroke-width="38"/>
     <rect x="155" y="112" width="202" height="288" rx="43" stroke="#334155" stroke-width="34"/>
-    <path d="M256 161v113" stroke="#C2413B" stroke-width="38"/>
-    <circle cx="256" cy="329" r="21" fill="#C2413B"/>
+    <path d="m218 218 76 76M294 218l-76 76" stroke="#C2413B" stroke-width="38"/>
   </g>
 </svg>

@@ -5,7 +5,6 @@
     <path d="M256 244V57" stroke="#0D9488" stroke-width="46"/>
     <path d="m188 125 68-68 68 68" stroke="#0D9488" stroke-width="46"/>
     <rect x="103" y="292" width="306" height="145" rx="47" stroke="#64748B" stroke-width="42"/>
-    <path d="M256 323v48" stroke="#C2413B" stroke-width="24"/>
-    <circle cx="256" cy="405" r="13" fill="#C2413B"/>
+    <path d="m226 337 60 58M286 337l-60 58" stroke="#C2413B" stroke-width="28"/>
   </g>
 </svg>

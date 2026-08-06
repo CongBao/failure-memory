@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-08-06
+
+### Changed
+
+- Replaced the failure exclamation mark with a stronger red cross throughout
+  the plugin, recording, and recall icon system for clearer recognition at
+  small sizes.
+- Simplified the compact composer icon to the durable-memory container and
+  failure mark so it remains legible down to 16 pixels.
+
 ## [0.10.3] - 2026-08-05
 
 ### Added

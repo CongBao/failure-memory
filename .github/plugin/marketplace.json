@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Local, cross-agent memory for learning from real failures without treating requirement changes as mistakes.",
-    "version": "0.10.3"
+    "version": "0.10.4"
   },
   "plugins": [
     {
