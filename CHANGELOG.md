@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-08-06
+
+### Fixed
+
+- Long multilingual lessons no longer prevent semantic index repair when the
+  pure-Go tokenizer omits usable token spans. Embedding projections now bound
+  tokenizer work and use verified token counts to enforce the model window
+  while preserving the complete authoritative lesson.
+
 ## [0.10.4] - 2026-08-06
 
 ### Changed

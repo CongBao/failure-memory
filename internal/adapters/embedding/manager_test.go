@@ -8,8 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	tokenizerapi "github.com/gomlx/go-huggingface/tokenizers/api"
+	"unicode/utf8"
 )
 
 func TestStatusValidatesPinnedManifestAndEveryChecksum(t *testing.T) {
@@ -50,34 +49,53 @@ func TestStatusValidatesPinnedManifestAndEveryChecksum(t *testing.T) {
 	}
 }
 
-func TestTruncateAnnotatedKeepsUTF8BoundaryAndSpecialTokenBudget(t *testing.T) {
-	text := "甲乙丙丁戊"
-	encoded := tokenizerapi.AnnotatedEncoding{
-		IDs:               []int{101, 1, 2, 3, 4, 5, 102},
-		Spans:             []tokenizerapi.TokenSpan{{Start: -1, End: -1}, {Start: 0, End: 3}, {Start: 3, End: 6}, {Start: 6, End: 9}, {Start: 9, End: 12}, {Start: 12, End: 15}, {Start: -1, End: -1}},
-		SpecialTokensMask: []int{1, 0, 0, 0, 0, 0, 1},
+func TestBoundTextToTokenLimitConvergesWithoutTokenizerSpans(t *testing.T) {
+	countTokens := func(value string) int {
+		return 2 + len([]rune(value))
 	}
-	bounded, err := truncateAnnotated(text, encoded, 5)
+	bounded, err := boundTextToTokenLimit(
+		strings.Repeat("界", 900),
+		512,
+		countTokens,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bounded != "甲乙丙" {
-		t.Fatalf("bounded text = %q, want %q", bounded, "甲乙丙")
+	if got := countTokens(bounded); got > 512 {
+		t.Fatalf("bounded token count = %d, want at most 512", got)
+	}
+	if got := len([]rune(bounded)); got != 510 {
+		t.Fatalf("bounded runes = %d, want 510", got)
 	}
 }
 
-func TestTruncateAnnotatedRejectsIncompleteAnnotations(t *testing.T) {
-	_, err := truncateAnnotated(
-		"too long",
-		tokenizerapi.AnnotatedEncoding{
-			IDs:               []int{1, 2, 3},
-			Spans:             []tokenizerapi.TokenSpan{{Start: 0, End: 3}},
-			SpecialTokensMask: []int{0, 0, 0},
-		},
-		2,
+func TestBoundTextToTokenLimitBoundsTokenizerWorkAndPreservesUTF8(t *testing.T) {
+	maximumInputBytes := 0
+	countTokens := func(value string) int {
+		if !utf8.ValidString(value) {
+			t.Fatal("tokenizer received invalid UTF-8")
+		}
+		if len(value) > maximumInputBytes {
+			maximumInputBytes = len(value)
+		}
+		return 2 + len([]rune(value))
+	}
+	bounded, err := boundTextToTokenLimit(
+		strings.Repeat("界", 20_000),
+		512,
+		countTokens,
 	)
-	if err == nil {
-		t.Fatal("incomplete annotations were accepted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(bounded) {
+		t.Fatal("bounded text is not valid UTF-8")
+	}
+	if got := countTokens(bounded); got > 512 {
+		t.Fatalf("bounded token count = %d, want at most 512", got)
+	}
+	if maximumInputBytes > 512*8 {
+		t.Fatalf("tokenizer saw %d bytes, want at most %d", maximumInputBytes, 512*8)
 	}
 }
 

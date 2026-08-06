@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gomlx/go-huggingface/hub"
 	tokenizerapi "github.com/gomlx/go-huggingface/tokenizers/api"
@@ -31,6 +32,8 @@ const (
 	ModelONNXPath   = "onnx/model_quantized.onnx"
 	ModelFilename   = "model_quantized.onnx"
 	ModelDimensions = 384
+
+	embeddingTokenizerBytesPerToken = 8
 )
 
 var requiredFiles = []string{
@@ -298,13 +301,11 @@ func (e *HugotEmbedder) load(ctx context.Context) error {
 		return errors.New("embedding model did not declare a positive token limit")
 	}
 	// gomlx/go-huggingface v0.4 accepts MaxLen but does not apply it in its
-	// Hugging Face tokenizer implementation. Request token annotations so this
-	// adapter can enforce the model boundary before inference.
+	// Hugging Face tokenizer implementation. boundText therefore enforces the
+	// model boundary with verified token counts before inference.
 	if err := pipeline.Model.Tokenizer.GoTokenizer.Tokenizer.With(tokenizerapi.EncodeOptions{
-		AddSpecialTokens:         true,
-		MaxLen:                   maxTokens,
-		IncludeSpans:             true,
-		IncludeSpecialTokensMask: true,
+		AddSpecialTokens: true,
+		MaxLen:           maxTokens,
 	}); err != nil {
 		_ = session.Destroy()
 		return fmt.Errorf("configure embedding tokenizer boundary: %w", err)
@@ -324,77 +325,67 @@ func (e *HugotEmbedder) boundText(text string) (string, error) {
 	}
 	tokenizer := e.pipeline.Model.Tokenizer.GoTokenizer.Tokenizer
 	maxTokens := e.pipeline.Model.MaxPositionEmbeddings
-	bounded := text
-	for attempts := 0; attempts < 32; attempts++ {
-		encoded := tokenizer.EncodeWithAnnotations(bounded)
-		if len(encoded.IDs) <= maxTokens {
-			return bounded, nil
-		}
-		next, err := truncateAnnotated(bounded, encoded, maxTokens)
-		if err != nil {
-			return "", err
-		}
-		if len(next) >= len(bounded) {
-			runes := []rune(bounded)
-			if len(runes) <= 1 {
-				return "", errors.New("embedding tokenizer could not enforce its token limit")
-			}
-			next = string(runes[:len(runes)-1])
-		}
-		bounded = next
-	}
-	return "", errors.New("embedding tokenizer did not converge on its token limit")
+	return boundTextToTokenLimit(text, maxTokens, func(value string) int {
+		return len(tokenizer.Encode(value))
+	})
 }
 
-func truncateAnnotated(
+func boundTextToTokenLimit(
 	text string,
-	encoded tokenizerapi.AnnotatedEncoding,
 	maxTokens int,
+	countTokens func(string) int,
 ) (string, error) {
-	if len(encoded.IDs) <= maxTokens {
+	if maxTokens <= 0 {
+		return "", errors.New("embedding model did not declare a positive token limit")
+	}
+	if countTokens == nil {
+		return "", errors.New("embedding tokenizer is not loaded")
+	}
+
+	// Bound tokenizer work before the first encoding. The authoritative lesson
+	// remains complete; only its derived embedding projection is shortened.
+	text = utf8Prefix(text, maxTokens*embeddingTokenizerBytesPerToken)
+	if countTokens(text) <= maxTokens {
 		return text, nil
 	}
-	if len(encoded.Spans) != len(encoded.IDs) ||
-		len(encoded.SpecialTokensMask) != len(encoded.IDs) {
-		return "", errors.New("embedding tokenizer did not return complete token annotations")
-	}
-	specialTokens := 0
-	for _, value := range encoded.SpecialTokensMask {
-		if value != 0 {
-			specialTokens++
-		}
-	}
-	contentBudget := maxTokens - specialTokens
-	if contentBudget <= 0 {
+	if countTokens("") > maxTokens {
 		return "", errors.New("embedding model token limit leaves no content capacity")
 	}
-	contentTokens := 0
-	end := 0
-	for index, span := range encoded.Spans {
-		if encoded.SpecialTokensMask[index] != 0 {
-			continue
-		}
-		contentTokens++
-		if contentTokens > contentBudget {
-			break
-		}
-		if span.End > end {
-			end = span.End
+
+	// Search UTF-8 rune boundaries and retain only candidates whose actual token
+	// count has been verified. Even if token counts are not perfectly monotonic,
+	// best always remains safe and the search terminates in O(log n) encodings.
+	runes := []rune(text)
+	low, high := 0, len(runes)-1
+	best := ""
+	for low <= high {
+		middle := low + (high-low)/2
+		candidate := string(runes[:middle+1])
+		if countTokens(candidate) <= maxTokens {
+			best = candidate
+			low = middle + 1
+		} else {
+			high = middle - 1
 		}
 	}
-	if end > len(text) {
-		end = len(text)
+	if countTokens(best) > maxTokens {
+		return "", errors.New("embedding tokenizer could not enforce its token limit")
 	}
-	if end <= 0 {
-		return "", fmt.Errorf(
-			"embedding tokenizer could not identify a safe truncation boundary (tokens=%d, special=%d, content_budget=%d, end=%d)",
-			len(encoded.IDs),
-			specialTokens,
-			contentBudget,
-			end,
-		)
+	return best, nil
+}
+
+func utf8Prefix(value string, maximumBytes int) string {
+	if maximumBytes <= 0 {
+		return ""
 	}
-	return text[:end], nil
+	if len(value) <= maximumBytes {
+		return value
+	}
+	end := maximumBytes
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end]
 }
 
 func validate(modelPath string, verifyChecksums bool) (Manifest, error) {
