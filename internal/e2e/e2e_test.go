@@ -35,7 +35,7 @@ func TestCLIHelperProcess(t *testing.T) {
 	os.Exit(cli.Run(arguments, os.Stdin, os.Stdout, os.Stderr))
 }
 
-func TestMCPInitializesAndCallsBothToolsWithRestrictedPATH(t *testing.T) {
+func TestMCPInitializesAndCallsPublicToolsWithRestrictedPATH(t *testing.T) {
 	root := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -55,14 +55,15 @@ func TestMCPInitializesAndCallsBothToolsWithRestrictedPATH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 2 {
+	if len(listed.Tools) != 3 {
 		t.Fatalf("tools = %#v", listed.Tools)
 	}
 	names := map[string]bool{}
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	if !names["remember_failure"] || !names["recall_failure_lessons"] {
+	if !names["remember_failure"] || !names["recall_failure_lessons"] ||
+		!names["report_memory_outcome"] {
 		t.Fatalf("tool names = %#v", names)
 	}
 	remembered, err := session.CallTool(ctx, &mcp.CallToolParams{
@@ -79,6 +80,24 @@ func TestMCPInitializesAndCallsBothToolsWithRestrictedPATH(t *testing.T) {
 	})
 	if err != nil || recalled.IsError {
 		t.Fatalf("recall_failure_lessons: result=%#v err=%v stderr=%s", recalled, err, stderr.String())
+	}
+	var recallOutput model.RecallResult
+	recallJSON, err := json.Marshal(recalled.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(recallJSON, &recallOutput); err != nil {
+		t.Fatal(err)
+	}
+	reported, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "report_memory_outcome",
+		Arguments: model.MemoryOutcomeInput{
+			TargetType: "recall", TargetID: recallOutput.AttemptID,
+			Outcome: "unknown", EvidenceCode: "e2e_transport_observation",
+		},
+	})
+	if err != nil || reported.IsError {
+		t.Fatalf("report_memory_outcome: result=%#v err=%v stderr=%s", reported, err, stderr.String())
 	}
 }
 

@@ -42,6 +42,10 @@ type FailureMode string
 
 type Confidence string
 
+type MemoryTargetType string
+
+type MemoryOutcome string
+
 var classificationValues = []string{
 	string(RequirementUpdate),
 	string(RequirementClarification),
@@ -84,6 +88,16 @@ var failureModeValues = []string{
 
 var confidenceValues = []string{"low", "medium", "high", "unknown"}
 
+var memoryTargetTypeValues = []string{"recall", "repair", "lesson"}
+
+var memoryOutcomeValues = []string{
+	"applied", "not_applicable", "already_known", "contradicted",
+	"prevented_recurrence", "failed_to_prevent", "ignored", "unknown",
+	"partially_applied", "rejected", "verified_effective",
+	"verified_ineffective", "recurrence_observed", "superseded",
+	"confirmed", "false_positive", "stale", "needs_generalization",
+}
+
 func ClassificationValues() []string {
 	return append([]string(nil), classificationValues...)
 }
@@ -98,6 +112,14 @@ func FailureModeValues() []string {
 
 func ConfidenceValues() []string {
 	return append([]string(nil), confidenceValues...)
+}
+
+func MemoryTargetTypeValues() []string {
+	return append([]string(nil), memoryTargetTypeValues...)
+}
+
+func MemoryOutcomeValues() []string {
+	return append([]string(nil), memoryOutcomeValues...)
 }
 
 func (c *Confidence) UnmarshalJSON(data []byte) error {
@@ -216,13 +238,15 @@ type RememberResult struct {
 }
 
 type RecallInput struct {
-	Text              string `json:"text" jsonschema:"Compact task evidence, not a raw prompt."`
-	ExpectedInvariant string `json:"expected_invariant,omitempty"`
-	ControllableCause string `json:"controllable_cause,omitempty"`
-	PreventionAction  string `json:"prevention_action,omitempty"`
-	Component         string `json:"component,omitempty"`
-	Mode              string `json:"mode,omitempty" jsonschema:"auto, exact, lexical, semantic, or hybrid."`
-	TopK              int    `json:"top_k,omitempty" jsonschema:"Number of lessons to return, from 1 to 3."`
+	Text              string            `json:"text" jsonschema:"Compact task evidence, not a raw prompt."`
+	ExpectedInvariant string            `json:"expected_invariant,omitempty"`
+	ControllableCause string            `json:"controllable_cause,omitempty"`
+	PreventionAction  string            `json:"prevention_action,omitempty"`
+	Component         string            `json:"component,omitempty"`
+	Mode              string            `json:"mode,omitempty" jsonschema:"auto, exact, lexical, semantic, or hybrid."`
+	TopK              int               `json:"top_k,omitempty" jsonschema:"Maximum lessons to return, from 1 to 3."`
+	MinRelevance      float64           `json:"min_relevance,omitempty" jsonschema:"Minimum calibrated relevance from 0 to 1; zero or omitted uses the retrieval profile default."`
+	Representatives   map[string]string `json:"-"`
 }
 
 type Lesson struct {
@@ -237,39 +261,44 @@ type Lesson struct {
 	CauseLayer       string   `json:"cause_layer"`
 	FailureMode      string   `json:"failure_mode"`
 	Component        string   `json:"component"`
-	Score            float64  `json:"score"`
+	RelevanceScore   float64  `json:"relevance_score"`
 	RetrievalReasons []string `json:"retrieval_reasons"`
 }
 
 type RecallResult struct {
-	AttemptID      string   `json:"attempt_id"`
-	Mode           string   `json:"mode"`
-	SemanticStatus string   `json:"semantic_status"`
-	Lessons        []Lesson `json:"lessons"`
-	TotalLatencyMS int64    `json:"total_latency_ms"`
-	CandidateCount int      `json:"candidate_count"`
-	StoreScope     string   `json:"store_scope"`
-}
-
-type RecallOutcomeInput struct {
-	RecallAttemptID string  `json:"recall_attempt_id"`
-	LessonVersionID string  `json:"lesson_version_id,omitempty"`
-	Outcome         string  `json:"outcome" jsonschema:"useful, not_useful, false_positive, prevented_recurrence, contradicted_current_task, stale, ignored, or unknown."`
-	DetailCode      string  `json:"detail_code,omitempty"`
-	Confidence      float64 `json:"confidence,omitempty"`
-}
-
-type RepairOutcomeInput struct {
-	RepairRecommendationID string `json:"repair_recommendation_id"`
-	Outcome                string `json:"outcome" jsonschema:"applied, rejected, partially_applied, verified_effective, verified_ineffective, recurrence_observed, or superseded."`
-	DetailCode             string `json:"detail_code,omitempty"`
-	Evidence               string `json:"evidence,omitempty"`
-	Confidence             string `json:"confidence,omitempty"`
+	AttemptID              string   `json:"attempt_id"`
+	Mode                   string   `json:"mode"`
+	SemanticStatus         string   `json:"semantic_status"`
+	Lessons                []Lesson `json:"lessons"`
+	TotalLatencyMS         int64    `json:"total_latency_ms"`
+	CandidateCount         int      `json:"candidate_count"`
+	RetrievedCount         int      `json:"retrieved_count"`
+	FilteredBelowThreshold int      `json:"filtered_below_threshold"`
+	CollapsedByCluster     int      `json:"collapsed_by_cluster"`
+	TrimmedByAdaptiveLimit int      `json:"trimmed_by_adaptive_limit"`
+	AppliedTopK            int      `json:"applied_top_k"`
+	AppliedMinRelevance    float64  `json:"applied_min_relevance"`
+	AbstentionReason       string   `json:"abstention_reason,omitempty"`
+	StoreScope             string   `json:"store_scope"`
 }
 
 type OutcomeResult struct {
-	EventID string `json:"event_id"`
-	Status  string `json:"status"`
+	EventID         string `json:"event_id"`
+	Status          string `json:"status"`
+	Duplicate       bool   `json:"duplicate,omitempty"`
+	LessonID        string `json:"lesson_id,omitempty"`
+	LessonVersionID string `json:"lesson_version_id,omitempty"`
+	RetrievalStatus string `json:"retrieval_status,omitempty"`
+}
+
+type MemoryOutcomeInput struct {
+	TargetType       MemoryTargetType `json:"target_type" jsonschema:"recall, repair, or lesson."`
+	TargetID         string           `json:"target_id" jsonschema:"Recall attempt, repair recommendation, or lesson version identifier."`
+	Outcome          MemoryOutcome    `json:"outcome" jsonschema:"Evidence-bounded outcome for the selected target type."`
+	LessonVersionIDs []string         `json:"lesson_version_ids,omitempty"`
+	EvidenceCode     string           `json:"evidence_code" jsonschema:"Compact code for the evidence supporting this outcome."`
+	Confidence       float64          `json:"confidence,omitempty"`
+	IdempotencyKey   string           `json:"idempotency_key,omitempty" jsonschema:"Optional retry key; a deterministic key is derived when omitted."`
 }
 
 type Cluster struct {
@@ -288,12 +317,25 @@ type ClusterRunResult struct {
 }
 
 type GeneralizationReviewInput struct {
-	RunID                    string   `json:"run_id"`
-	ClusterKey               string   `json:"cluster_key"`
-	Decision                 string   `json:"decision" jsonschema:"accept, reject, or defer."`
-	RationaleCode            string   `json:"rationale_code"`
-	SupportingLessonVersions []string `json:"supporting_lesson_version_ids"`
-	CounterexampleVersions   []string `json:"counterexample_lesson_version_ids,omitempty"`
+	RunID                    string                  `json:"run_id"`
+	ClusterKey               string                  `json:"cluster_key"`
+	Decision                 string                  `json:"decision" jsonschema:"accept, reject, or defer."`
+	RationaleCode            string                  `json:"rationale_code"`
+	SupportingLessonVersions []string                `json:"supporting_lesson_version_ids"`
+	CounterexampleVersions   []string                `json:"counterexample_lesson_version_ids,omitempty"`
+	GeneralizedLesson        *GeneralizedLessonInput `json:"generalized_lesson,omitempty"`
+}
+
+type GeneralizedLessonInput struct {
+	Title           string      `json:"title"`
+	Rule            string      `json:"rule"`
+	Prevention      string      `json:"prevention"`
+	Verification    string      `json:"verification"`
+	Applicability   string      `json:"applicability,omitempty"`
+	Counterexamples string      `json:"counterexamples,omitempty"`
+	CauseLayer      CauseLayer  `json:"cause_layer"`
+	FailureMode     FailureMode `json:"failure_mode"`
+	Component       string      `json:"component"`
 }
 
 type LegacyCapture struct {

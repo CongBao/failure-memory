@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -159,26 +160,34 @@ func (s *Service) Remember(ctx context.Context, input model.RememberInput) (mode
 func (s *Service) Recall(ctx context.Context, input model.RecallInput) (model.RecallResult, error) {
 	started := time.Now()
 	input = redact.Recall(input)
+	requestData, _ := json.Marshal(input)
 	if strings.TrimSpace(input.Text) == "" {
 		return model.RecallResult{}, errors.New("text is required")
-	}
-	if strings.TrimSpace(input.ExpectedInvariant) == "" &&
-		strings.TrimSpace(input.ControllableCause) == "" &&
-		strings.TrimSpace(input.PreventionAction) == "" &&
-		strings.TrimSpace(input.Component) == "" {
-		return model.RecallResult{}, errors.New("one concrete discriminator is required")
 	}
 	if input.TopK < 0 || input.TopK > 3 {
 		return model.RecallResult{}, errors.New("top_k must be between 1 and 3")
 	}
+	if input.MinRelevance < 0 || input.MinRelevance > 1 {
+		return model.RecallResult{}, errors.New("min_relevance must be between 0 and 1")
+	}
+	indexStarted := time.Now()
 	if _, err := s.ensureIndex(ctx, false); err != nil {
 		return model.RecallResult{}, fmt.Errorf("repair retrieval index: %w", err)
 	}
+	indexLatency := time.Since(indexStarted).Milliseconds()
+	representatives, err := s.store.RetrievalRepresentatives(ctx)
+	if err != nil {
+		return model.RecallResult{}, err
+	}
+	input.Representatives = representatives
 	operationID := identity.New("recallop")
+	searchStarted := time.Now()
 	searched, err := s.index.Search(ctx, input)
 	if err != nil {
 		return model.RecallResult{}, fmt.Errorf("search failure memory: %w", err)
 	}
+	searchLatency := time.Since(searchStarted).Milliseconds()
+	hydrationStarted := time.Now()
 	lessons := make([]model.Lesson, 0, len(searched.Candidates))
 	traceCandidates := make([]storesqlite.RecallCandidate, 0, len(searched.Candidates))
 	for rank, candidate := range searched.Candidates {
@@ -201,17 +210,20 @@ func (s *Service) Recall(ctx context.Context, input model.RecallInput) (model.Re
 			CauseLayer:       document.CauseLayer,
 			FailureMode:      document.FailureMode,
 			Component:        document.Component,
-			Score:            candidate.Score,
+			RelevanceScore:   candidate.RelevanceScore,
 			RetrievalReasons: candidate.Reasons,
 		})
 		traceCandidates = append(traceCandidates, storesqlite.RecallCandidate{
 			LessonVersionID: candidate.LessonVersionID,
 			Rank:            rank + 1,
 			Score:           candidate.Score,
+			RelevanceScore:  candidate.RelevanceScore,
 			Reasons:         candidate.Reasons,
 			Selected:        true,
 		})
 	}
+	hydrationLatency := time.Since(hydrationStarted).Milliseconds()
+	responseData, _ := json.Marshal(lessons)
 	attemptID, err := s.store.AppendRecall(
 		ctx,
 		operationID,
@@ -219,18 +231,39 @@ func (s *Service) Recall(ctx context.Context, input model.RecallInput) (model.Re
 		searched.Mode,
 		searched.SemanticStatus,
 		traceCandidates,
+		storesqlite.RecallTelemetry{
+			RetrievedCount:         searched.RetrievedCount,
+			FilteredBelowThreshold: searched.FilteredBelowThreshold,
+			CollapsedByCluster:     searched.CollapsedByCluster,
+			TrimmedByAdaptiveLimit: searched.TrimmedByAdaptiveLimit,
+			AppliedTopK:            searched.AppliedTopK,
+			AppliedMinRelevance:    searched.AppliedMinRelevance,
+			AbstentionReason:       searched.AbstentionReason,
+			IndexSyncLatencyMS:     indexLatency,
+			SearchLatencyMS:        searchLatency,
+			HydrationLatencyMS:     hydrationLatency,
+			RequestBytes:           len(requestData),
+			ResponseBytes:          len(responseData),
+		},
 	)
 	if err != nil {
 		return model.RecallResult{}, fmt.Errorf("append recall trace: %w", err)
 	}
 	return model.RecallResult{
-		AttemptID:      attemptID,
-		Mode:           searched.Mode,
-		SemanticStatus: searched.SemanticStatus,
-		Lessons:        lessons,
-		TotalLatencyMS: time.Since(started).Milliseconds(),
-		CandidateCount: len(traceCandidates),
-		StoreScope:     "global_personal",
+		AttemptID:              attemptID,
+		Mode:                   searched.Mode,
+		SemanticStatus:         searched.SemanticStatus,
+		Lessons:                lessons,
+		TotalLatencyMS:         time.Since(started).Milliseconds(),
+		CandidateCount:         len(traceCandidates),
+		RetrievedCount:         searched.RetrievedCount,
+		FilteredBelowThreshold: searched.FilteredBelowThreshold,
+		CollapsedByCluster:     searched.CollapsedByCluster,
+		TrimmedByAdaptiveLimit: searched.TrimmedByAdaptiveLimit,
+		AppliedTopK:            searched.AppliedTopK,
+		AppliedMinRelevance:    searched.AppliedMinRelevance,
+		AbstentionReason:       searched.AbstentionReason,
+		StoreScope:             "global_personal",
 	}, nil
 }
 
@@ -296,12 +329,11 @@ func (s *Service) Doctor(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	result["retrieval_index"] = indexStatus
-	counts, _ := result["counts"].(map[string]int64)
-	expected := counts["lessons"]
-	revision, _ := result["lesson_revision"].(int64)
-	indexComplete := indexStatus.Documents == expected &&
-		indexStatus.Lexical == expected &&
-		indexStatus.Vectors == expected &&
+	expected, _ := result["manifest_lesson_count"].(int)
+	revision, _ := result["retrieval_revision"].(int64)
+	indexComplete := indexStatus.Documents == int64(expected) &&
+		indexStatus.Lexical == int64(expected) &&
+		indexStatus.Vectors == int64(expected) &&
 		indexStatus.SourceRevision == revision
 	indexManifest, manifestErr := s.index.Manifest(ctx)
 	if manifestErr == nil {
@@ -339,37 +371,60 @@ func (s *Service) Metrics(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	recallPerformance, err := s.store.RecallPerformance(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := s.store.LessonLifecycleCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	coverage, err := s.store.OutcomeCoverage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	harnessUsage, err := s.store.HarnessUsage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	generalizationBacklog, err := s.store.GeneralizationBacklog(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"counts":         counts,
-		"event_counts":   eventCounts,
-		"outcome_counts": outcomeCounts,
-		"store_id":       s.store.StoreID(),
+		"counts":                 counts,
+		"event_counts":           eventCounts,
+		"outcome_counts":         outcomeCounts,
+		"outcome_coverage":       coverage,
+		"recall_performance":     recallPerformance,
+		"lesson_lifecycle":       lifecycle,
+		"generalization_backlog": generalizationBacklog,
+		"harness_usage":          harnessUsage,
+		"store_id":               s.store.StoreID(),
 	}, nil
 }
 
-func (s *Service) RecordRecallOutcome(
+func (s *Service) ReportOutcome(
 	ctx context.Context,
-	input model.RecallOutcomeInput,
+	input model.MemoryOutcomeInput,
 ) (model.OutcomeResult, error) {
-	input.DetailCode = redact.Text(input.DetailCode)
-	eventID, err := s.store.AppendRecallOutcome(ctx, input)
+	input.EvidenceCode = redact.Text(input.EvidenceCode)
+	result, err := s.store.AppendMemoryOutcome(ctx, input)
 	if err != nil {
 		return model.OutcomeResult{}, err
 	}
-	return model.OutcomeResult{EventID: eventID, Status: "recorded"}, nil
-}
-
-func (s *Service) RecordRepairOutcome(
-	ctx context.Context,
-	input model.RepairOutcomeInput,
-) (model.OutcomeResult, error) {
-	input.DetailCode = redact.Text(input.DetailCode)
-	input.Evidence = redact.Text(input.Evidence)
-	eventID, err := s.store.AppendRepairOutcome(ctx, input)
-	if err != nil {
-		return model.OutcomeResult{}, err
+	retrievalStatus := ""
+	if result.RetrievalChanged && !result.Duplicate {
+		retrievalStatus = "ready"
+		if _, err := s.ensureIndex(ctx, false); err != nil {
+			retrievalStatus = "repair_pending"
+		}
 	}
-	return model.OutcomeResult{EventID: eventID, Status: "recorded"}, nil
+	return model.OutcomeResult{
+		EventID: result.EventID, Status: "recorded", Duplicate: result.Duplicate,
+		LessonID: result.LessonID, LessonVersionID: result.LessonVersionID,
+		RetrievalStatus: retrievalStatus,
+	}, nil
 }
 
 func (s *Service) ProposeClusters(
@@ -415,11 +470,70 @@ func (s *Service) ReviewGeneralization(
 	input model.GeneralizationReviewInput,
 ) (model.OutcomeResult, error) {
 	input.RationaleCode = redact.Text(input.RationaleCode)
-	eventID, err := s.store.AppendGeneralizationReview(ctx, input)
+	var document *model.LessonDocument
+	if input.Decision == "accept" {
+		if input.GeneralizedLesson == nil {
+			return model.OutcomeResult{}, errors.New("accepted generalization requires generalized_lesson")
+		}
+		generalized := input.GeneralizedLesson
+		if !containsValue(model.CauseLayerValues(), string(generalized.CauseLayer)) ||
+			!containsValue(model.FailureModeValues(), string(generalized.FailureMode)) {
+			return model.OutcomeResult{}, errors.New("generalized lesson cause taxonomy is invalid")
+		}
+		if strings.TrimSpace(generalized.Rule) == "" ||
+			strings.TrimSpace(generalized.Prevention) == "" ||
+			strings.TrimSpace(generalized.Verification) == "" ||
+			strings.TrimSpace(generalized.Component) == "" {
+			return model.OutcomeResult{}, errors.New("generalized lesson is missing durable fields")
+		}
+		synthetic := model.RememberInput{
+			Expectation: &model.ExpectationEvidence{Invariant: generalized.Rule},
+			Observed: &model.ObservedEvidence{
+				Outcome: "Related incidents shared one controllable failure pattern.",
+				Impact:  "Separate lessons duplicated prevention guidance.",
+			},
+			Cause: &model.CauseEvidence{
+				Layer: generalized.CauseLayer, FailureMode: generalized.FailureMode,
+				Component: generalized.Component, Evidence: input.RationaleCode,
+				RecommendedChange: generalized.Prevention,
+				Verification:      generalized.Verification,
+			},
+			Lesson: &model.LessonEvidence{
+				Title: generalized.Title, Rule: generalized.Rule,
+				Prevention: generalized.Prevention, Verification: generalized.Verification,
+				Applicability:   generalized.Applicability,
+				Counterexamples: generalized.Counterexamples,
+			},
+		}
+		document = buildDocument(synthetic, storesqlite.CanonicalSignature(synthetic))
+	}
+	stored, err := s.store.AppendGeneralizationReview(ctx, input, document)
 	if err != nil {
 		return model.OutcomeResult{}, err
 	}
-	return model.OutcomeResult{EventID: eventID, Status: "recorded"}, nil
+	if input.Decision == "accept" {
+		retrievalStatus := "ready"
+		if _, err := s.ensureIndex(ctx, false); err != nil {
+			retrievalStatus = "repair_pending"
+		}
+		return model.OutcomeResult{
+			EventID: stored.EventID, Status: "recorded", LessonID: stored.LessonID,
+			LessonVersionID: stored.LessonVersionID, RetrievalStatus: retrievalStatus,
+		}, nil
+	}
+	return model.OutcomeResult{
+		EventID: stored.EventID, Status: "recorded", LessonID: stored.LessonID,
+		LessonVersionID: stored.LessonVersionID,
+	}, nil
+}
+
+func containsValue(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) MigrateV07(
@@ -466,7 +580,7 @@ func (s *Service) semanticStatus() string {
 }
 
 func (s *Service) quickIndexSync(ctx context.Context) (bool, error) {
-	revision, err := s.store.LessonRevision(ctx)
+	revision, err := s.store.RetrievalRevision(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -481,7 +595,7 @@ func (s *Service) ensureIndex(ctx context.Context, deep bool) (string, error) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
-	revision, err := s.store.LessonRevision(ctx)
+	revision, err := s.store.RetrievalRevision(ctx)
 	if err != nil {
 		s.setSyncStateLocked("repair_failed", err)
 		return "repair_failed", err
@@ -539,7 +653,7 @@ func (s *Service) ensureIndex(ctx context.Context, deep bool) (string, error) {
 			s.setSyncStateLocked("repair_failed", err)
 			return "repair_failed", err
 		}
-		liveRevision, err := s.store.LessonRevision(ctx)
+		liveRevision, err := s.store.RetrievalRevision(ctx)
 		if err != nil {
 			s.setSyncStateLocked("repair_failed", err)
 			return "repair_failed", err
@@ -572,9 +686,8 @@ func (s *Service) ensureIndex(ctx context.Context, deep bool) (string, error) {
 }
 
 func indexStatusMatches(status ports.RetrievalStatus, revision int64) bool {
-	return status.Documents == revision &&
-		status.Lexical == revision &&
-		status.Vectors == revision &&
+	return status.Documents == status.Lexical &&
+		status.Lexical == status.Vectors &&
 		status.SourceRevision == revision
 }
 

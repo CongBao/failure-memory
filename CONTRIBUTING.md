@@ -33,8 +33,8 @@ go build ./cmd/failure-memory
 - Do not add `docs/`, `plans/`, or `specs/` to Git.
 
 Validate plugin JSON and both skills when changing their contracts. Keep the public MCP
-surface limited to `remember_failure` and `recall_failure_lessons`; administration
-belongs in the CLI.
+surface limited to `remember_failure`, `recall_failure_lessons`, and
+`report_memory_outcome`; administration belongs in the CLI.
 
 ## Pull requests
 

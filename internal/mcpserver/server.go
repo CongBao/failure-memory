@@ -26,7 +26,7 @@ func New(svc *service.Service) *mcp.Server {
 			WebsiteURL:  "https://github.com/CongBao/failure-memory",
 		},
 		&mcp.ServerOptions{
-			Instructions: "Use remember_failure only for evidence-backed qualification. Normally call it once; correct once only after retryable=true or explicit pre-execution schema validation, never after an ambiguous failure. Use recall_failure_lessons once with bounded task evidence. Never submit raw prompts, secrets, or unnecessary user text.",
+			Instructions: "Use remember_failure only for evidence-backed qualification. Use recall_failure_lessons once with compact task evidence and accept an empty result. Use report_memory_outcome only when an outcome is already supported by verification or user feedback. Never submit raw prompts, secrets, or unnecessary user text.",
 			Capabilities: &mcp.ServerCapabilities{},
 		},
 	)
@@ -57,7 +57,8 @@ func New(svc *service.Service) *mcp.Server {
 		&mcp.Tool{
 			Name:        "recall_failure_lessons",
 			Title:       "Recall failure lessons",
-			Description: "Recall at most three relevant local lessons with one bounded exact, lexical, vector, semantic, or hybrid search and append a privacy-preserving trace.",
+			Description: "Return zero to three lessons after calibrated relevance filtering and cluster collapse; top_k is only a maximum. Append a privacy-preserving performance trace.",
+			InputSchema: recallInputSchema(),
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Recall failure lessons",
 				ReadOnlyHint:    false,
@@ -71,7 +72,40 @@ func New(svc *service.Service) *mcp.Server {
 			return nil, output, err
 		},
 	)
+	mcp.AddTool(
+		server,
+		&mcp.Tool{
+			Name:        "report_memory_outcome",
+			Title:       "Report a memory outcome",
+			Description: "Append one idempotent, evidence-bounded outcome for a recall, repair recommendation, or lesson without deleting audit history.",
+			InputSchema: memoryOutcomeInputSchema(),
+			Annotations: &mcp.ToolAnnotations{
+				Title:           "Report a memory outcome",
+				ReadOnlyHint:    false,
+				DestructiveHint: &closed,
+				IdempotentHint:  true,
+				OpenWorldHint:   &openWorld,
+			},
+		},
+		func(ctx context.Context, _ *mcp.CallToolRequest, input model.MemoryOutcomeInput) (*mcp.CallToolResult, model.OutcomeResult, error) {
+			output, err := svc.ReportOutcome(ctx, input)
+			return nil, output, err
+		},
+	)
 	return server
+}
+
+func recallInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[model.RecallInput](nil)
+	if err != nil {
+		panic(err)
+	}
+	schema.Properties["top_k"].Minimum = jsonschema.Ptr(1.0)
+	schema.Properties["top_k"].Maximum = jsonschema.Ptr(3.0)
+	schema.Properties["min_relevance"].Minimum = jsonschema.Ptr(0.0)
+	schema.Properties["min_relevance"].Maximum = jsonschema.Ptr(1.0)
+	schema.Properties["mode"].Enum = []any{"auto", "exact", "lexical", "semantic", "hybrid"}
+	return schema
 }
 
 func rememberInputSchema() *jsonschema.Schema {
@@ -101,5 +135,26 @@ func rememberInputSchema() *jsonschema.Schema {
 	if err != nil {
 		panic(err)
 	}
+	return schema
+}
+
+func memoryOutcomeInputSchema() *jsonschema.Schema {
+	stringEnum := func(values []string) *jsonschema.Schema {
+		items := make([]any, len(values))
+		for index, value := range values {
+			items[index] = value
+		}
+		return &jsonschema.Schema{Type: "string", Enum: items}
+	}
+	options := &jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[model.MemoryTargetType](): stringEnum(model.MemoryTargetTypeValues()),
+		reflect.TypeFor[model.MemoryOutcome]():    stringEnum(model.MemoryOutcomeValues()),
+	}}
+	schema, err := jsonschema.For[model.MemoryOutcomeInput](options)
+	if err != nil {
+		panic(err)
+	}
+	schema.Properties["confidence"].Minimum = jsonschema.Ptr(0.0)
+	schema.Properties["confidence"].Maximum = jsonschema.Ptr(1.0)
 	return schema
 }

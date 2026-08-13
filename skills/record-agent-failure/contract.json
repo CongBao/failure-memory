@@ -1,5 +1,5 @@
 {
-  "contract_version": 7,
+  "contract_version": 8,
   "policy_kind": "record_failure",
   "skill": {
     "name": "record-agent-failure",
@@ -7,6 +7,12 @@
   },
   "policy": {
     "tool": "remember_failure",
+    "false_positive_tool": "report_memory_outcome",
+    "false_positive_action": {
+      "target_type": "lesson",
+      "outcome": "false_positive",
+      "requires": ["lesson_version_id", "evidence_code"]
+    },
     "fallback_command": "failure-memory",
     "fallback_arguments": [
       "remember"

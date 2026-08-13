@@ -46,9 +46,23 @@ func TestOpenMigratesV1StoreWithoutChangingProjectedLesson(t *testing.T) {
 	if lesson.Rule != "preserve v1 lessons" || lesson.LessonID != "lesson-v1" {
 		t.Fatalf("fixture lesson changed: %#v", lesson)
 	}
+	retrievalRevision, err := store.RetrievalRevision(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrievalRevision != 1 {
+		t.Fatalf("retrieval revision = %d, want 1", retrievalRevision)
+	}
+	lifecycle, err := store.LessonLifecycleCounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle["proposed"] != 1 {
+		t.Fatalf("migrated lifecycle = %#v", lifecycle)
+	}
 
 	backups, err := filepath.Glob(filepath.Join(
-		filepath.Dir(path), "migration-backups", "events-pre-v1-to-v3-*.sqlite3",
+		filepath.Dir(path), "migration-backups", "events-pre-v1-to-v4-*.sqlite3",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +159,20 @@ func TestLessonRevisionTriggerCoversOlderWriters(t *testing.T) {
 	}
 	if revision != 1 {
 		t.Fatalf("lesson revision = %d, want 1", revision)
+	}
+	retrievalRevision, err := store.RetrievalRevision(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrievalRevision != 1 {
+		t.Fatalf("retrieval revision = %d, want 1", retrievalRevision)
+	}
+	lifecycle, err := store.LessonLifecycleCounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle["proposed"] != 1 {
+		t.Fatalf("older writer lifecycle = %#v", lifecycle)
 	}
 }
 

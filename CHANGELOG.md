@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-13
+
+### Added
+
+- Calibrated relevance thresholds are applied before `top_k`, with zero-result
+  abstention, cluster collapse, per-result relevance scores, and selection diagnostics.
+- A third idempotent MCP/CLI operation records evidence-bounded recall, repair, and
+  lesson outcomes without deleting history.
+- Append-only lesson lifecycle projections retain false-positive, stale, superseded,
+  and generalized lessons while excluding inactive versions from normal recall.
+- Accepted generalization reviews create a parent lesson and retain child lessons as
+  superseded audit history.
+- Metrics now include recall filtering and abstention rates, latency percentiles,
+  input/output size, outcome coverage, lifecycle counts, generalization backlog, and
+  per-harness usage.
+- Integration coverage calibrates multilingual semantic recall against a real pinned
+  E5 model, including a required abstention for an unrelated query.
+
+### Changed
+
+- Recall requires only compact task text. Optional discriminators are no longer
+  invented, and an empty result is treated as a successful bounded lookup.
+- FTS5 evidence uses rank-based calibration because raw BM25 magnitudes vary with
+  corpus size; model-based semantic profiles use a separately verified threshold.
+- The shared prompt guidance and all supported harness integrations expose the same
+  three-operation memory workflow.
+
 ## [0.10.5] - 2026-08-06
 
 ### Fixed

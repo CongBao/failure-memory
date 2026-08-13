@@ -60,6 +60,18 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 			return encodeOne(stdout, result)
 		})
+	case "outcome":
+		return withService("cli", stderr, func(ctx context.Context, svc *service.Service) error {
+			var input model.MemoryOutcomeInput
+			if err := decodeOne(stdin, &input); err != nil {
+				return err
+			}
+			result, err := svc.ReportOutcome(ctx, input)
+			if err != nil {
+				return err
+			}
+			return encodeOne(stdout, result)
+		})
 	case "doctor":
 		return withService("cli", stderr, func(ctx context.Context, svc *service.Service) error {
 			result, err := svc.Doctor(ctx)
@@ -94,8 +106,6 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		})
 	case "adapters":
 		return runAdapters(args[1:], stdout, stderr)
-	case "feedback":
-		return runFeedback(args[1:], stdin, stdout, stderr)
 	case "cluster":
 		return runCluster(args[1:], stdin, stdout, stderr)
 	case "migrate-v0":
@@ -327,35 +337,6 @@ func runMigrateV0(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
-func runFeedback(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) != 1 || (args[0] != "recall" && args[0] != "repair") {
-		_, _ = fmt.Fprintln(stderr, "usage: failure-memory feedback <recall|repair>")
-		return 2
-	}
-	return withService("cli", stderr, func(ctx context.Context, svc *service.Service) error {
-		if args[0] == "recall" {
-			var input model.RecallOutcomeInput
-			if err := decodeOne(stdin, &input); err != nil {
-				return err
-			}
-			result, err := svc.RecordRecallOutcome(ctx, input)
-			if err != nil {
-				return err
-			}
-			return encodeOne(stdout, result)
-		}
-		var input model.RepairOutcomeInput
-		if err := decodeOne(stdin, &input); err != nil {
-			return err
-		}
-		result, err := svc.RecordRepairOutcome(ctx, input)
-		if err != nil {
-			return err
-		}
-		return encodeOne(stdout, result)
-	})
-}
-
 func runCluster(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: failure-memory cluster <propose|review>")
@@ -501,9 +482,10 @@ func printUsage(writer io.Writer) {
 		"usage: failure-memory <command>",
 		"",
 		"Agent operations:",
-		"  mcp --stdio       serve the two public MCP tools",
+		"  mcp --stdio       serve the three public MCP tools",
 		"  remember          read one remember_failure JSON object from stdin",
 		"  recall            read one recall_failure_lessons JSON object from stdin",
+		"  outcome           append one evidence-bounded memory outcome",
 		"",
 		"Administration:",
 		"  doctor            verify the global store and retrieval adapter",
@@ -512,8 +494,6 @@ func printUsage(writer io.Writer) {
 		"  index build       rebuild derived exact, FTS5, and vector indexes",
 		"  adapters status   show the optional semantic embedding adapter",
 		"  adapters install  explicitly install the pinned semantic model",
-		"  feedback recall   append an outcome for a prior recall attempt",
-		"  feedback repair   append an outcome for a repair recommendation",
 		"  cluster propose   create non-mutating generalization proposals",
 		"  cluster review    append an accept/reject/defer proposal review",
 		"  migrate-v0        copy a reviewed v0.3-v0.7 store into v1",

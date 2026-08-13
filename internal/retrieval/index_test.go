@@ -74,6 +74,211 @@ func TestRebuildPreservesExistingIndexWhenEmbeddingPreparationFails(t *testing.T
 	}
 }
 
+func TestSearchUsesRelevanceThresholdBeforeTopK(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(filepath.Join(t.TempDir(), "index.sqlite3"), NewFeatureHashEmbedder(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+
+	lessons := []model.LessonDocument{
+		testLesson("lesson-v1", "schema migration compatibility"),
+		testLesson("lesson-v2", "browser credential boundary"),
+		testLesson("lesson-v3", "audio rendering pipeline"),
+	}
+	if err := index.Rebuild(ctx, lessons, int64(len(lessons))); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := index.Search(ctx, model.RecallInput{
+		Text:         "quarterly catering menu",
+		Component:    "office lunch",
+		Mode:         "hybrid",
+		TopK:         3,
+		MinRelevance: 0.95,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 0 {
+		t.Fatalf("below-threshold candidates returned: %#v", result.Candidates)
+	}
+	if result.RetrievedCount != 3 || result.FilteredBelowThreshold != 3 {
+		t.Fatalf("search diagnostics = %#v", result)
+	}
+	if result.AppliedTopK != 3 || result.AppliedMinRelevance != 0.95 {
+		t.Fatalf("applied policy = %#v", result)
+	}
+}
+
+func TestSearchTreatsTopKAsAnUpperBoundAfterThresholding(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(filepath.Join(t.TempDir(), "index.sqlite3"), NewFeatureHashEmbedder(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	lessons := []model.LessonDocument{
+		testLesson("lesson-v1", "one"),
+		testLesson("lesson-v2", "two"),
+		testLesson("lesson-v3", "three"),
+	}
+	if err := index.Rebuild(ctx, lessons, int64(len(lessons))); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := index.Search(ctx, model.RecallInput{
+		Text:         "bounded retrieval",
+		Component:    "retrieval",
+		Mode:         "hybrid",
+		TopK:         2,
+		MinRelevance: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 2 {
+		t.Fatalf("candidate count = %d, want 2: %#v", len(result.Candidates), result)
+	}
+	for _, candidate := range result.Candidates {
+		if candidate.RelevanceScore != 1 {
+			t.Fatalf("exact candidate relevance = %f, want 1", candidate.RelevanceScore)
+		}
+	}
+}
+
+func TestSearchUsesAdaptiveLimitOnlyWhenTopKIsOmitted(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(filepath.Join(t.TempDir(), "index.sqlite3"), NewFeatureHashEmbedder(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	lessons := []model.LessonDocument{
+		testLesson("lesson-v1", "shared recall token alpha"),
+		testLesson("lesson-v2", "shared recall token beta"),
+		testLesson("lesson-v3", "shared recall token gamma"),
+	}
+	if err := index.Rebuild(ctx, lessons, int64(len(lessons))); err != nil {
+		t.Fatal(err)
+	}
+	adaptive, err := index.Search(ctx, model.RecallInput{
+		Text: "shared recall token", Mode: "lexical",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adaptive.Candidates) != 1 {
+		t.Fatalf("adaptive default returned %d candidates: %#v", len(adaptive.Candidates), adaptive)
+	}
+	if adaptive.TrimmedByAdaptiveLimit != 2 || adaptive.AppliedTopK != 3 {
+		t.Fatalf("adaptive diagnostics = %#v", adaptive)
+	}
+	explicit, err := index.Search(ctx, model.RecallInput{
+		Text: "shared recall token", Mode: "lexical", TopK: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(explicit.Candidates) != 3 {
+		t.Fatalf("explicit top_k returned %d candidates: %#v", len(explicit.Candidates), explicit)
+	}
+}
+
+func TestSearchUsesProfileThresholdWhenCallerOmitsMinimum(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(filepath.Join(t.TempDir(), "index.sqlite3"), NewFeatureHashEmbedder(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	lessons := []model.LessonDocument{
+		testLesson("lesson-v1", "schema migration compatibility"),
+		testLesson("lesson-v2", "browser credential boundary"),
+		testLesson("lesson-v3", "audio rendering pipeline"),
+	}
+	if err := index.Rebuild(ctx, lessons, int64(len(lessons))); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := index.Search(ctx, model.RecallInput{
+		Text: "quarterly catering menu",
+		Mode: "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AppliedMinRelevance <= 0 {
+		t.Fatalf("profile threshold was not applied: %#v", result)
+	}
+	if len(result.Candidates) != 0 || result.AbstentionReason == "" {
+		t.Fatalf("unrelated query did not abstain: %#v", result)
+	}
+}
+
+func TestSearchReturnsOneWhenAResultClearlyLeads(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(filepath.Join(t.TempDir(), "index.sqlite3"), NewFeatureHashEmbedder(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	lessons := []model.LessonDocument{
+		testLesson("lesson-v1", "schema migration compatibility"),
+		testLesson("lesson-v2", "browser credential boundary"),
+		testLesson("lesson-v3", "audio rendering pipeline"),
+	}
+	if err := index.Rebuild(ctx, lessons, int64(len(lessons))); err != nil {
+		t.Fatal(err)
+	}
+	result, err := index.Search(ctx, model.RecallInput{
+		Text: "rule schema migration compatibility",
+		Mode: "auto",
+		TopK: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].LessonVersionID != "lesson-v1" {
+		t.Fatalf("clear leader result = %#v", result)
+	}
+}
+
+func TestSearchCollapsesRelatedLessonsBeforeApplyingTopK(t *testing.T) {
+	ctx := context.Background()
+	index, err := Open(filepath.Join(t.TempDir(), "index.sqlite3"), NewFeatureHashEmbedder(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = index.Close() }()
+	lessons := []model.LessonDocument{
+		testLesson("lesson-v1", "one"),
+		testLesson("lesson-v2", "two"),
+		testLesson("lesson-v3", "three"),
+	}
+	if err := index.Rebuild(ctx, lessons, int64(len(lessons))); err != nil {
+		t.Fatal(err)
+	}
+	result, err := index.Search(ctx, model.RecallInput{
+		Text:         "bounded retrieval",
+		Component:    "retrieval",
+		TopK:         3,
+		MinRelevance: 1,
+		Representatives: map[string]string{
+			"lesson-v1": "pending-cluster-1",
+			"lesson-v2": "pending-cluster-1",
+			"lesson-v3": "lesson-v2",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 1 || result.CollapsedByCluster != 2 {
+		t.Fatalf("cluster collapse result = %#v", result)
+	}
+}
+
 func testLesson(versionID, marker string) model.LessonDocument {
 	return model.LessonDocument{
 		LessonID:        "lesson-" + marker,

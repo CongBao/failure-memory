@@ -14,18 +14,19 @@ It can:
 - record the root cause, recommended repair location, and durable prevention lesson;
 - reuse an exact existing lesson instead of creating duplicates;
 - surface related lessons for review without silently merging or deleting history;
-- recall up to three relevant lessons before similar work;
-- retain recall and outcome history for metrics and future improvement.
+- recall only lessons that clear a calibrated relevance threshold before similar work;
+- keep false positives and superseded lessons in history while removing them from recall;
+- retain recall, lifecycle, outcome, cost, and harness history for measurement and improvement.
 
 ## Supported agents
 
 | Agent | Integration |
 | --- | --- |
-| OpenAI Codex | Plugin, record/recall skills, and prompt hooks |
-| Claude Code | Plugin, record/recall skills, and prompt hooks |
-| GitHub Copilot CLI | Plugin, record/recall skills, and prompt hooks |
-| Cursor | Plugin, record/recall skills, and session hook |
-| Other agents | The two skills plus the local `failure-memory` command |
+| OpenAI Codex | Plugin, skills, MCP tools, and prompt hooks |
+| Claude Code | Plugin, skills, MCP tools, and prompt hooks |
+| GitHub Copilot CLI and Chat | Plugin, skills, MCP tools, and prompt hooks |
+| Cursor | Plugin, skills, MCP tools, and session hook |
+| Other agents | The skills plus the local `failure-memory` command or MCP server |
 
 All integrations use the same store for the current OS user. Installing Failure Memory
 in another supported agent does not create another memory database.
@@ -50,7 +51,7 @@ irm https://raw.githubusercontent.com/CongBao/failure-memory/main/scripts/instal
 
 The installer downloads the release for your platform, verifies its checksum, installs
 one shared `failure-memory` executable, adds the plugin through each detected agent's
-native plugin manager, and registers the two fast MCP tools with the executable's
+native plugin manager, and registers the three fast MCP tools with the executable's
 absolute path. Codex, Claude Code, and GitHub Copilot CLI are completed automatically.
 If Cursor is detected, its MCP tools are configured automatically and the installer
 prints the `/add-plugin` command needed to enable the skills and hook because Cursor does
@@ -92,9 +93,13 @@ do not interrupt ordinary work when no useful memory action is needed.
 Before changing this migration workflow, recall relevant failure lessons.
 ```
 
-A recall needs a short task description plus something concrete, such as the component,
-expected invariant, suspected cause, or prevention action. It returns at most three
-lessons. Treat recalled lessons as cautions to validate against the current task, not as
+A short task description is enough. Add a component, expected invariant, suspected
+cause, or prevention action only when it is already known. Failure Memory filters by a
+retrieval-profile relevance threshold, collapses lessons from the same cluster, and then
+applies `top_k` as a maximum. A healthy recall can therefore return zero, one, two, or
+three lessons. It never lowers the threshold just to fill the result list.
+
+Treat recalled lessons as cautions to validate against the current task, not as
 instructions that override current requirements.
 
 ### Record a real failure
@@ -132,10 +137,38 @@ Before adding a lesson, Failure Memory checks the existing store:
 - a related case remains separate and may produce a generalization proposal for review;
 - history is not silently merged or deleted.
 
+When reviewed related lessons express one durable rule, `cluster review` can create a
+new generalized parent lesson. The original lessons remain in the append-only history
+and point to the parent instead of competing with it in recall.
+
+### Correct or evaluate memory
+
+Verified outcomes make memory quality measurable. For example, mark a lesson that was
+actually a requirement change as a false positive:
+
+```bash
+printf '%s' '{"target_type":"lesson","target_id":"lessonv_...","outcome":"false_positive","evidence_code":"confirmed_requirement_change"}' \
+  | failure-memory outcome
+```
+
+You can also report outcomes for a `recall` attempt or a `repair` recommendation by
+using the identifier returned by the original operation. Repeating the same outcome is
+idempotent. Lesson corrections never delete the original evidence; false-positive,
+stale, and superseded lessons are retained but excluded from normal recall.
+
 ### Run a recall from the command line
 
 ```bash
 printf '%s' '{"text":"schema migration","component":"migration workflow"}' \
+  | failure-memory recall
+```
+
+Normally omit `mode`, `top_k`, and `min_relevance`. For a stricter bounded lookup,
+set `min_relevance` above zero; zero and omission select the profile default. The
+threshold is always applied before `top_k`:
+
+```bash
+printf '%s' '{"text":"schema migration","top_k":2,"min_relevance":0.9}' \
   | failure-memory recall
 ```
 
@@ -150,6 +183,10 @@ Failure Memory supports:
 - SQLite FTS5 full-text search, including CJK bigrams;
 - local sqlite-vec vector search;
 - hybrid ranking across exact, full-text, and vector results.
+
+Every search mode returns a calibrated `relevance_score`. Exact matches score `1`;
+semantic and fallback profiles use separately calibrated default thresholds. An empty
+result means no candidate met the threshold, not that the search failed.
 
 Exact and full-text recall work immediately. A deterministic local vector index supports
 hybrid ranking without a model download. To enable model-based multilingual semantic
@@ -173,12 +210,13 @@ failure-memory store-status
 failure-memory backup create
 failure-memory backup verify <backup-directory>
 failure-memory cluster propose
-failure-memory feedback recall
-failure-memory feedback repair
+failure-memory outcome
 ```
 
-Clustering and feedback commands append proposals or observations. They do not delete,
-silently merge, or automatically promote lessons.
+`failure-memory metrics` reports recall abstention and filtering rates, latency
+percentiles, input/output size, outcome coverage, lesson lifecycle counts,
+generalization backlog, and usage by agent harness. Clustering and outcome commands
+append proposals or observations. They do not delete or silently merge history.
 
 To restore a backup, first stop every agent application using Failure Memory, then run:
 

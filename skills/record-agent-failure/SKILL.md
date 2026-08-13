@@ -23,6 +23,12 @@ classifications use only:
 {"summary":"compact chronology","classification":"requirement_update"}
 ```
 
+If the user identifies an already-recorded lesson as a requirement change and its
+`lesson_version_id` is available, call `report_memory_outcome` once with
+`target_type=lesson`, `outcome=false_positive`, and a compact evidence code instead of
+creating another failure. This appends a correction and removes the lesson from default
+recall without deleting its audit history.
+
 For `mixed`, `failure_portion` is a compact string containing only the old-invariant
 mismatch. Real or mixed failures use the exact tool schema: `expectation` has `invariant`,
 `source`, `evidence`; `observed` has `outcome`, `impact`, optional `recurrence_risk`;

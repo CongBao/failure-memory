@@ -11,7 +11,7 @@ import (
 	"github.com/CongBao/failure-memory/internal/service"
 )
 
-func TestServerExposesOnlyTwoPublicTools(t *testing.T) {
+func TestServerExposesThreeTypedPublicTools(t *testing.T) {
 	t.Setenv("FAILURE_MEMORY_HOME", t.TempDir())
 	svc, err := service.Open("mcp-test")
 	if err != nil {
@@ -40,11 +40,13 @@ func TestServerExposesOnlyTwoPublicTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 2 {
-		t.Fatalf("tool count = %d, want 2", len(tools.Tools))
+	if len(tools.Tools) != 3 {
+		t.Fatalf("tool count = %d, want 3", len(tools.Tools))
 	}
 	names := map[string]bool{}
 	var rememberSchema any
+	var recallSchema any
+	var outcomeSchema any
 	for _, tool := range tools.Tools {
 		names[tool.Name] = true
 		if tool.InputSchema == nil || tool.OutputSchema == nil {
@@ -53,8 +55,15 @@ func TestServerExposesOnlyTwoPublicTools(t *testing.T) {
 		if tool.Name == "remember_failure" {
 			rememberSchema = tool.InputSchema
 		}
+		if tool.Name == "recall_failure_lessons" {
+			recallSchema = tool.InputSchema
+		}
+		if tool.Name == "report_memory_outcome" {
+			outcomeSchema = tool.InputSchema
+		}
 	}
-	if !names["remember_failure"] || !names["recall_failure_lessons"] {
+	if !names["remember_failure"] || !names["recall_failure_lessons"] ||
+		!names["report_memory_outcome"] {
 		t.Fatalf("unexpected tools: %#v", names)
 	}
 	schemaJSON, err := json.Marshal(rememberSchema)
@@ -65,6 +74,29 @@ func TestServerExposesOnlyTwoPublicTools(t *testing.T) {
 	for _, required := range []string{`"enum"`, `"skill_instruction"`, `"anyOf"`} {
 		if !strings.Contains(schemaText, required) {
 			t.Fatalf("remember schema lacks %s: %s", required, schemaText)
+		}
+	}
+	recallJSON, err := json.Marshal(recallSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recallText := string(recallJSON)
+	for _, required := range []string{`"text"`, `"min_relevance"`, `"maximum":1`} {
+		if !strings.Contains(recallText, required) {
+			t.Fatalf("recall schema lacks %s: %s", required, recallText)
+		}
+	}
+	if strings.Contains(recallText, "representatives") {
+		t.Fatalf("recall schema exposes internal representatives: %s", recallText)
+	}
+	outcomeJSON, err := json.Marshal(outcomeSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomeText := string(outcomeJSON)
+	for _, required := range []string{`"target_type"`, `"recall"`, `"repair"`, `"lesson"`, `"false_positive"`} {
+		if !strings.Contains(outcomeText, required) {
+			t.Fatalf("outcome schema lacks %s: %s", required, outcomeText)
 		}
 	}
 

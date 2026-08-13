@@ -18,7 +18,7 @@ import (
 	"github.com/CongBao/failure-memory/internal/identity"
 )
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 const schemaV2 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -40,6 +40,82 @@ AFTER INSERT ON lesson_projection BEGIN
 END;
 `
 
+const schemaV4 = `
+CREATE TABLE IF NOT EXISTS lesson_lifecycle_projection (
+    lesson_version_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    representative_lesson_version_id TEXT NOT NULL,
+    last_outcome TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    source_event_id TEXT NOT NULL,
+    FOREIGN KEY(lesson_version_id) REFERENCES lesson_projection(lesson_version_id)
+);
+
+CREATE INDEX IF NOT EXISTS lesson_lifecycle_state_idx
+ON lesson_lifecycle_projection(state, lesson_version_id);
+
+CREATE TABLE IF NOT EXISTS memory_outcome_receipt (
+    idempotency_key TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    request_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_outcome_receipt_no_update
+BEFORE UPDATE ON memory_outcome_receipt BEGIN
+    SELECT RAISE(ABORT, 'memory_outcome_receipt is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_outcome_receipt_no_delete
+BEFORE DELETE ON memory_outcome_receipt BEGIN
+    SELECT RAISE(ABORT, 'memory_outcome_receipt is append-only');
+END;
+
+INSERT OR IGNORE INTO lesson_lifecycle_projection(
+    lesson_version_id, state, representative_lesson_version_id,
+    last_outcome, updated_at, source_event_id
+)
+SELECT lesson_version_id, state, lesson_version_id, '', created_at, source_event_id
+FROM lesson_projection;
+
+UPDATE lesson_lifecycle_projection AS lifecycle
+SET representative_lesson_version_id = COALESCE((
+    SELECT json_extract(event.payload_json, '$.related_lesson_version_ids[0]')
+    FROM event_log AS event
+    WHERE event.event_type = 'generalization_review_proposed'
+      AND json_extract(event.payload_json, '$.new_lesson_version_id') = lifecycle.lesson_version_id
+    ORDER BY event.sequence DESC
+    LIMIT 1
+), lifecycle.lesson_version_id)
+WHERE EXISTS (
+    SELECT 1 FROM event_log AS event
+    WHERE event.event_type = 'generalization_review_proposed'
+      AND json_extract(event.payload_json, '$.new_lesson_version_id') = lifecycle.lesson_version_id
+);
+
+INSERT OR IGNORE INTO store_metadata(key, value)
+VALUES ('retrieval_revision',
+    COALESCE((SELECT value FROM store_metadata WHERE key = 'lesson_revision'), '0'));
+
+DROP TRIGGER IF EXISTS lesson_projection_revision_insert;
+CREATE TRIGGER lesson_projection_revision_insert
+AFTER INSERT ON lesson_projection BEGIN
+    UPDATE store_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+    WHERE key = 'lesson_revision';
+    UPDATE store_metadata
+    SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+    WHERE key = 'retrieval_revision';
+    INSERT OR IGNORE INTO lesson_lifecycle_projection(
+        lesson_version_id, state, representative_lesson_version_id,
+        last_outcome, updated_at, source_event_id
+    ) VALUES (
+        NEW.lesson_version_id, NEW.state, NEW.lesson_version_id,
+        '', NEW.created_at, NEW.source_event_id
+    );
+END;
+`
+
 type migration struct {
 	version int
 	sql     string
@@ -48,6 +124,7 @@ type migration struct {
 var migrations = []migration{
 	{version: 2, sql: schemaV2},
 	{version: 3, sql: schemaV3},
+	{version: 4, sql: schemaV4},
 }
 
 func initializeAndMigrate(
@@ -331,6 +408,28 @@ func (s *Store) LessonRevision(ctx context.Context) (int64, error) {
 	if err := s.db.QueryRowContext(
 		ctx,
 		"SELECT value FROM store_metadata WHERE key = 'lesson_revision'",
+	).Scan(&value); err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(value, 10, 64)
+}
+
+func retrievalRevisionTx(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var value string
+	if err := tx.QueryRowContext(
+		ctx,
+		"SELECT value FROM store_metadata WHERE key = 'retrieval_revision'",
+	).Scan(&value); err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(value, 10, 64)
+}
+
+func (s *Store) RetrievalRevision(ctx context.Context) (int64, error) {
+	var value string
+	if err := s.db.QueryRowContext(
+		ctx,
+		"SELECT value FROM store_metadata WHERE key = 'retrieval_revision'",
 	).Scan(&value); err != nil {
 		return 0, err
 	}

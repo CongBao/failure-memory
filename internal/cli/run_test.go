@@ -126,6 +126,71 @@ func TestRememberFallbackReturnsOneMachineGuidedCorrection(t *testing.T) {
 	}
 }
 
+func TestOutcomeCommandCorrectsLessonWithoutDeletingHistory(t *testing.T) {
+	t.Setenv("FAILURE_MEMORY_HOME", t.TempDir())
+	t.Setenv("FAILURE_MEMORY_HARNESS", "cli-test")
+	payload, err := json.Marshal(cliFailureInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runForTest([]string{"remember"}, payload)
+	if code != 0 {
+		t.Fatalf("remember: code=%d stderr=%s", code, stderr)
+	}
+	var remembered model.RememberResult
+	if err := json.Unmarshal(stdout, &remembered); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := json.Marshal(model.MemoryOutcomeInput{
+		TargetType: "lesson", TargetID: remembered.LessonVersionID,
+		Outcome: "false_positive", EvidenceCode: "confirmed_requirement_change",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runForTest([]string{"outcome"}, outcome)
+	if code != 0 {
+		t.Fatalf("outcome: code=%d stderr=%s", code, stderr)
+	}
+	var corrected model.OutcomeResult
+	if err := json.Unmarshal(stdout, &corrected); err != nil {
+		t.Fatal(err)
+	}
+	if corrected.LessonVersionID != remembered.LessonVersionID {
+		t.Fatalf("outcome = %#v", corrected)
+	}
+	recall, err := json.Marshal(model.RecallInput{
+		Text:         "Every persisted-store migration needs an old-store fixture.",
+		MinRelevance: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr = runForTest([]string{"recall"}, recall)
+	if code != 0 {
+		t.Fatalf("recall: code=%d stderr=%s", code, stderr)
+	}
+	var recalled model.RecallResult
+	if err := json.Unmarshal(stdout, &recalled); err != nil {
+		t.Fatal(err)
+	}
+	if len(recalled.Lessons) != 0 {
+		t.Fatalf("false-positive lesson recalled: %#v", recalled)
+	}
+	code, stdout, stderr = runForTest([]string{"metrics"}, nil)
+	if code != 0 {
+		t.Fatalf("metrics: code=%d stderr=%s", code, stderr)
+	}
+	var metrics map[string]any
+	if err := json.Unmarshal(stdout, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if metrics["counts"].(map[string]any)["lessons"] != float64(1) ||
+		metrics["lesson_lifecycle"].(map[string]any)["false_positive"] != float64(1) {
+		t.Fatalf("corrected history metrics = %#v", metrics)
+	}
+}
+
 func runForTest(arguments []string, input []byte) (int, []byte, []byte) {
 	var stdout, stderr bytes.Buffer
 	code := Run(arguments, bytes.NewReader(input), &stdout, &stderr)

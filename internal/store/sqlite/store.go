@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,8 +167,40 @@ type RecallCandidate struct {
 	LessonVersionID string   `json:"lesson_version_id"`
 	Rank            int      `json:"rank"`
 	Score           float64  `json:"score"`
+	RelevanceScore  float64  `json:"relevance_score"`
 	Reasons         []string `json:"reasons"`
 	Selected        bool     `json:"selected"`
+}
+
+type RecallTelemetry struct {
+	RetrievedCount         int
+	FilteredBelowThreshold int
+	CollapsedByCluster     int
+	TrimmedByAdaptiveLimit int
+	AppliedTopK            int
+	AppliedMinRelevance    float64
+	AbstentionReason       string
+	IndexSyncLatencyMS     int64
+	SearchLatencyMS        int64
+	HydrationLatencyMS     int64
+	RequestBytes           int
+	ResponseBytes          int
+}
+
+type MemoryOutcomeResult struct {
+	EventID           string
+	Duplicate         bool
+	LessonID          string
+	LessonVersionID   string
+	RetrievalChanged  bool
+	RetrievalRevision int64
+}
+
+type GeneralizationResult struct {
+	EventID           string
+	LessonID          string
+	LessonVersionID   string
+	RetrievalRevision int64
 }
 
 func Open(path string, runtimeContext model.Context) (*Store, error) {
@@ -392,9 +425,25 @@ func (s *Store) Record(
 			}); err != nil {
 				return RecordResult{}, err
 			}
+			var representative string
+			if err := tx.QueryRow(`
+				SELECT representative_lesson_version_id
+				FROM lesson_lifecycle_projection WHERE lesson_version_id = ?`,
+				relatedVersions[0],
+			).Scan(&representative); err != nil {
+				return RecordResult{}, err
+			}
+			if _, err := tx.Exec(`
+				UPDATE lesson_lifecycle_projection
+				SET representative_lesson_version_id = ?
+				WHERE lesson_version_id = ?`,
+				representative, result.LessonVersionID,
+			); err != nil {
+				return RecordResult{}, err
+			}
 		}
 	}
-	if result.LessonRevision, err = lessonRevisionTx(ctx, tx); err != nil {
+	if result.LessonRevision, err = retrievalRevisionTx(ctx, tx); err != nil {
 		return RecordResult{}, err
 	}
 
@@ -458,63 +507,259 @@ func (s *Store) Record(
 	return result, nil
 }
 
-func (s *Store) AppendRecallOutcome(ctx context.Context, input model.RecallOutcomeInput) (string, error) {
-	valid := map[string]bool{
-		"useful": true, "not_useful": true, "false_positive": true,
-		"prevented_recurrence": true, "contradicted_current_task": true,
-		"stale": true, "ignored": true, "unknown": true,
-	}
-	if !valid[input.Outcome] {
-		return "", fmt.Errorf("unsupported recall outcome %q", input.Outcome)
-	}
+func (s *Store) AppendMemoryOutcome(
+	ctx context.Context,
+	input model.MemoryOutcomeInput,
+) (MemoryOutcomeResult, error) {
+	input.TargetType = model.MemoryTargetType(strings.ToLower(strings.TrimSpace(string(input.TargetType))))
+	input.Outcome = model.MemoryOutcome(strings.ToLower(strings.TrimSpace(string(input.Outcome))))
+	input.LessonVersionIDs = uniqueSortedStrings(input.LessonVersionIDs)
 	if input.Confidence < 0 || input.Confidence > 1 {
-		return "", errors.New("confidence must be between 0 and 1")
+		return MemoryOutcomeResult{}, errors.New("confidence must be between 0 and 1")
 	}
-	found, err := s.eventPayloadIDExists(ctx, "recall_attempted", "attempt_id", input.RecallAttemptID)
+	if strings.TrimSpace(input.EvidenceCode) == "" {
+		return MemoryOutcomeResult{}, errors.New("evidence_code is required")
+	}
+	allowed := map[string]map[string]bool{
+		"recall": {
+			"applied": true, "not_applicable": true, "already_known": true,
+			"contradicted": true, "prevented_recurrence": true,
+			"failed_to_prevent": true, "ignored": true, "unknown": true,
+		},
+		"repair": {
+			"applied": true, "partially_applied": true, "rejected": true,
+			"verified_effective": true, "verified_ineffective": true,
+			"recurrence_observed": true, "superseded": true,
+		},
+		"lesson": {
+			"confirmed": true, "false_positive": true, "stale": true,
+			"superseded": true, "needs_generalization": true,
+		},
+	}
+	if !allowed[string(input.TargetType)][string(input.Outcome)] {
+		return MemoryOutcomeResult{}, fmt.Errorf(
+			"unsupported %s outcome %q", input.TargetType, input.Outcome,
+		)
+	}
+	if strings.TrimSpace(input.TargetID) == "" {
+		return MemoryOutcomeResult{}, errors.New("target_id is required")
+	}
+	if strings.TrimSpace(input.IdempotencyKey) == "" {
+		digest := sha256.Sum256([]byte(strings.Join([]string{
+			string(input.TargetType), input.TargetID, string(input.Outcome),
+			strings.Join(input.LessonVersionIDs, ","), input.EvidenceCode,
+			strconv.FormatFloat(input.Confidence, 'g', -1, 64),
+		}, "\x00")))
+		input.IdempotencyKey = hex.EncodeToString(digest[:])
+	}
+	requestData, err := json.Marshal(map[string]any{
+		"target_type": input.TargetType, "target_id": input.TargetID,
+		"outcome": input.Outcome, "lesson_version_ids": input.LessonVersionIDs,
+		"evidence_code": input.EvidenceCode, "confidence": input.Confidence,
+	})
 	if err != nil {
-		return "", err
+		return MemoryOutcomeResult{}, err
 	}
-	if !found {
-		return "", errors.New("recall attempt does not exist")
-	}
-	if input.LessonVersionID != "" {
-		var count int
-		if err := s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM event_log
-			WHERE event_type = 'recall_candidate_observed'
-			  AND json_extract(payload_json, '$.attempt_id') = ?
-			  AND json_extract(payload_json, '$.lesson_version_id') = ?`,
-			input.RecallAttemptID,
-			input.LessonVersionID,
-		).Scan(&count); err != nil {
-			return "", err
+	requestDigest := sha256.Sum256(requestData)
+	requestSHA256 := hex.EncodeToString(requestDigest[:])
+	var existing, existingRequestSHA256 string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT event_id, request_sha256 FROM memory_outcome_receipt
+		WHERE idempotency_key = ?`, input.IdempotencyKey).Scan(
+		&existing, &existingRequestSHA256,
+	)
+	if err == nil {
+		if existingRequestSHA256 != requestSHA256 {
+			return MemoryOutcomeResult{}, errors.New("idempotency_key was already used for a different outcome")
 		}
-		if count == 0 {
-			return "", errors.New("lesson was not a candidate in this recall")
-		}
+		revision, revisionErr := s.RetrievalRevision(ctx)
+		return MemoryOutcomeResult{
+			EventID: existing, Duplicate: true, RetrievalRevision: revision,
+		}, revisionErr
 	}
-	return s.appendStandaloneEvent(ctx, "recall_outcome_observed", identity.New("feedback"), input)
-}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return MemoryOutcomeResult{}, err
+	}
 
-func (s *Store) AppendRepairOutcome(ctx context.Context, input model.RepairOutcomeInput) (string, error) {
-	valid := map[string]bool{
-		"applied": true, "rejected": true, "partially_applied": true,
-		"verified_effective": true, "verified_ineffective": true,
-		"recurrence_observed": true, "superseded": true,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return MemoryOutcomeResult{}, err
 	}
-	if !valid[input.Outcome] {
-		return "", fmt.Errorf("unsupported repair outcome %q", input.Outcome)
+	defer func() { _ = tx.Rollback() }()
+	eventID := identity.New("event")
+	receipt, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO memory_outcome_receipt(
+			idempotency_key, event_id, request_sha256, created_at
+		) VALUES (?, ?, ?, ?)`, input.IdempotencyKey, eventID, requestSHA256,
+		time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return MemoryOutcomeResult{}, err
 	}
-	found, err := s.eventPayloadIDExists(
-		ctx, "repair_recommended", "recommendation_id", input.RepairRecommendationID,
+	claimed, err := receipt.RowsAffected()
+	if err != nil {
+		return MemoryOutcomeResult{}, err
+	}
+	if claimed == 0 {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT event_id, request_sha256 FROM memory_outcome_receipt WHERE idempotency_key = ?`,
+			input.IdempotencyKey,
+		).Scan(&existing, &existingRequestSHA256); err != nil {
+			return MemoryOutcomeResult{}, err
+		}
+		if existingRequestSHA256 != requestSHA256 {
+			return MemoryOutcomeResult{}, errors.New("idempotency_key was already used for a different outcome")
+		}
+		revision, err := retrievalRevisionTx(ctx, tx)
+		if err != nil {
+			return MemoryOutcomeResult{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return MemoryOutcomeResult{}, err
+		}
+		return MemoryOutcomeResult{
+			EventID: existing, Duplicate: true, RetrievalRevision: revision,
+		}, nil
+	}
+	retrievalChanged := false
+	switch string(input.TargetType) {
+	case "recall":
+		if found, err := eventPayloadIDExistsTx(
+			tx, "recall_attempted", "attempt_id", input.TargetID,
+		); err != nil || !found {
+			if err != nil {
+				return MemoryOutcomeResult{}, err
+			}
+			return MemoryOutcomeResult{}, errors.New("recall attempt does not exist")
+		}
+		for _, versionID := range input.LessonVersionIDs {
+			var count int
+			if err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM event_log
+				WHERE event_type = 'recall_candidate_observed'
+				  AND json_extract(payload_json, '$.attempt_id') = ?
+				  AND json_extract(payload_json, '$.lesson_version_id') = ?
+				  AND json_extract(payload_json, '$.selected') = 1`,
+				input.TargetID, versionID,
+			).Scan(&count); err != nil {
+				return MemoryOutcomeResult{}, err
+			}
+			if count == 0 {
+				return MemoryOutcomeResult{}, fmt.Errorf(
+					"lesson %s was not returned by recall attempt", versionID,
+				)
+			}
+		}
+	case "repair":
+		if found, err := eventPayloadIDExistsTx(
+			tx, "repair_recommended", "recommendation_id", input.TargetID,
+		); err != nil || !found {
+			if err != nil {
+				return MemoryOutcomeResult{}, err
+			}
+			return MemoryOutcomeResult{}, errors.New("repair recommendation does not exist")
+		}
+	case "lesson":
+		if err := tx.QueryRow(`
+			SELECT lesson_id FROM lesson_projection WHERE lesson_version_id = ?`,
+			input.TargetID,
+		).Scan(&existing); errors.Is(err, sql.ErrNoRows) {
+			return MemoryOutcomeResult{}, errors.New("lesson version does not exist")
+		} else if err != nil {
+			return MemoryOutcomeResult{}, err
+		}
+	}
+	eventID, err = s.appendEventWithID(
+		tx, eventID, "memory_outcome_observed", identity.New("outcome"), input,
 	)
 	if err != nil {
-		return "", err
+		return MemoryOutcomeResult{}, err
 	}
-	if !found {
-		return "", errors.New("repair recommendation does not exist")
+	if input.TargetType == "lesson" {
+		var previousState string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT state FROM lesson_lifecycle_projection WHERE lesson_version_id = ?`,
+			input.TargetID,
+		).Scan(&previousState); err != nil {
+			return MemoryOutcomeResult{}, err
+		}
+		state := "active"
+		switch string(input.Outcome) {
+		case "false_positive", "stale", "superseded":
+			state = string(input.Outcome)
+		case "needs_generalization":
+			state = "proposed"
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE lesson_lifecycle_projection
+			SET state = ?, last_outcome = ?, updated_at = ?, source_event_id = ?
+			WHERE lesson_version_id = ?`,
+			state, string(input.Outcome), time.Now().UTC().Format(time.RFC3339Nano),
+			eventID, input.TargetID,
+		); err != nil {
+			return MemoryOutcomeResult{}, err
+		}
+		retrievalChanged = searchableLifecycleState(previousState) != searchableLifecycleState(state)
+		if retrievalChanged {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE store_metadata
+				SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+				WHERE key = 'retrieval_revision'`); err != nil {
+				return MemoryOutcomeResult{}, err
+			}
+		}
 	}
-	return s.appendStandaloneEvent(ctx, "repair_outcome_observed", identity.New("repairfb"), input)
+	revision, err := retrievalRevisionTx(ctx, tx)
+	if err != nil {
+		return MemoryOutcomeResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return MemoryOutcomeResult{}, err
+	}
+	result := MemoryOutcomeResult{EventID: eventID, RetrievalRevision: revision}
+	if input.TargetType == "lesson" {
+		result.LessonID = existing
+		result.LessonVersionID = input.TargetID
+		result.RetrievalChanged = retrievalChanged
+	}
+	return result, nil
+}
+
+func searchableLifecycleState(state string) bool {
+	return state != "false_positive" && state != "stale" && state != "superseded"
+}
+
+func eventPayloadIDExistsTx(
+	tx *sql.Tx,
+	eventType string,
+	field string,
+	value string,
+) (bool, error) {
+	if field != "attempt_id" && field != "recommendation_id" {
+		return false, errors.New("unsupported event identifier field")
+	}
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) FROM event_log
+		WHERE event_type = ? AND json_extract(payload_json, '$.%s') = ?`, field)
+	var count int
+	if err := tx.QueryRow(query, eventType, value).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (s *Store) AppendClusterRun(
@@ -562,19 +807,45 @@ func (s *Store) AppendClusterRun(
 func (s *Store) AppendGeneralizationReview(
 	ctx context.Context,
 	input model.GeneralizationReviewInput,
-) (string, error) {
+	document *model.LessonDocument,
+) (GeneralizationResult, error) {
 	if input.Decision != "accept" && input.Decision != "reject" && input.Decision != "defer" {
-		return "", errors.New("decision must be accept, reject, or defer")
+		return GeneralizationResult{}, errors.New("decision must be accept, reject, or defer")
 	}
 	if strings.TrimSpace(input.RationaleCode) == "" || len(input.SupportingLessonVersions) < 2 {
-		return "", errors.New("rationale and at least two supporting lessons are required")
+		return GeneralizationResult{}, errors.New("rationale and at least two supporting lessons are required")
 	}
 	found, err := s.eventPayloadIDExists(ctx, "lesson_cluster_proposed", "run_id", input.RunID)
 	if err != nil {
-		return "", err
+		return GeneralizationResult{}, err
 	}
 	if !found {
-		return "", errors.New("cluster run does not exist")
+		return GeneralizationResult{}, errors.New("cluster run does not exist")
+	}
+	var proposalJSON string
+	err = s.db.QueryRowContext(ctx, `
+		SELECT payload_json FROM event_log
+		WHERE event_type = 'generalization_proposal_created'
+		  AND json_extract(payload_json, '$.run_id') = ?
+		  AND json_extract(payload_json, '$.cluster_key') = ?
+		ORDER BY sequence DESC LIMIT 1`, input.RunID, input.ClusterKey).Scan(&proposalJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return GeneralizationResult{}, errors.New("cluster was not proposed by this run")
+	}
+	if err != nil {
+		return GeneralizationResult{}, err
+	}
+	var proposal struct {
+		SupportingLessonVersions []string `json:"supporting_lesson_versions"`
+	}
+	if err := json.Unmarshal([]byte(proposalJSON), &proposal); err != nil {
+		return GeneralizationResult{}, fmt.Errorf("decode cluster proposal: %w", err)
+	}
+	if !sameStringSet(input.SupportingLessonVersions, proposal.SupportingLessonVersions) {
+		return GeneralizationResult{}, errors.New("supporting lessons do not match the proposed cluster")
+	}
+	if input.Decision == "accept" && document == nil {
+		return GeneralizationResult{}, errors.New("accepted generalization requires generalized_lesson")
 	}
 	payload := map[string]any{
 		"run_id":                         input.RunID,
@@ -584,9 +855,126 @@ func (s *Store) AppendGeneralizationReview(
 		"supporting_lesson_version_ids":  input.SupportingLessonVersions,
 		"counterexample_lesson_versions": input.CounterexampleVersions,
 	}
-	return s.appendStandaloneEvent(
-		ctx, "generalization_proposal_reviewed", identity.New("clusterreview"), payload,
-	)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GeneralizationResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var finalized int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM event_log
+		WHERE event_type = 'generalization_proposal_reviewed'
+		  AND json_extract(payload_json, '$.run_id') = ?
+		  AND json_extract(payload_json, '$.cluster_key') = ?
+		  AND json_extract(payload_json, '$.decision') IN ('accept', 'reject')`,
+		input.RunID, input.ClusterKey,
+	).Scan(&finalized); err != nil {
+		return GeneralizationResult{}, err
+	}
+	if finalized > 0 {
+		return GeneralizationResult{}, errors.New("cluster proposal already has a final review")
+	}
+	operationID := identity.New("clusterreview")
+	eventID, err := s.appendEvent(tx, "generalization_proposal_reviewed", operationID, payload)
+	if err != nil {
+		return GeneralizationResult{}, err
+	}
+	result := GeneralizationResult{EventID: eventID}
+	if input.Decision == "accept" {
+		for _, versionID := range input.SupportingLessonVersions {
+			var count int
+			if err := tx.QueryRow(`
+				SELECT COUNT(*) FROM lesson_projection WHERE lesson_version_id = ?`,
+				versionID,
+			).Scan(&count); err != nil {
+				return GeneralizationResult{}, err
+			}
+			if count == 0 {
+				return GeneralizationResult{}, fmt.Errorf("supporting lesson %s does not exist", versionID)
+			}
+		}
+		result.LessonID = identity.New("lesson")
+		result.LessonVersionID = identity.New("lessonv")
+		lessonEventID, err := s.appendEvent(tx, "lesson_generalized", operationID, map[string]any{
+			"lesson_id":                  result.LessonID,
+			"lesson_version_id":          result.LessonVersionID,
+			"signature":                  document.Signature,
+			"title":                      document.Title,
+			"rule":                       document.Rule,
+			"prevention":                 document.Prevention,
+			"verification":               document.Verification,
+			"applicability":              document.Applicability,
+			"counterexamples":            document.Counterexamples,
+			"cause_layer":                document.CauseLayer,
+			"failure_mode":               document.FailureMode,
+			"component":                  document.Component,
+			"supporting_lesson_versions": input.SupportingLessonVersions,
+			"state":                      "active",
+		})
+		if err != nil {
+			return GeneralizationResult{}, err
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO lesson_projection(
+				lesson_id, lesson_version_id, signature, title, rule, prevention,
+				verification, applicability, counterexamples, cause_layer,
+				failure_mode, component, document, state, created_at, source_event_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+			result.LessonID, result.LessonVersionID, document.Signature,
+			document.Title, document.Rule, document.Prevention, document.Verification,
+			document.Applicability, document.Counterexamples, document.CauseLayer,
+			document.FailureMode, document.Component, document.Document, now, lessonEventID,
+		); err != nil {
+			return GeneralizationResult{}, err
+		}
+		for _, versionID := range input.SupportingLessonVersions {
+			supersededEventID, err := s.appendEvent(tx, "lesson_superseded", operationID, map[string]any{
+				"lesson_version_id":                versionID,
+				"representative_lesson_version_id": result.LessonVersionID,
+				"reason":                           "accepted_generalization",
+			})
+			if err != nil {
+				return GeneralizationResult{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE lesson_lifecycle_projection
+				SET state = 'superseded', representative_lesson_version_id = ?,
+				    last_outcome = 'superseded', updated_at = ?, source_event_id = ?
+				WHERE lesson_version_id = ?`,
+				result.LessonVersionID, now, supersededEventID, versionID,
+			); err != nil {
+				return GeneralizationResult{}, err
+			}
+		}
+	}
+	result.RetrievalRevision, err = retrievalRevisionTx(ctx, tx)
+	if err != nil {
+		return GeneralizationResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return GeneralizationResult{}, err
+	}
+	return result, nil
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, value := range left {
+		counts[value]++
+	}
+	for _, value := range right {
+		counts[value]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) ImportLegacy(
@@ -821,6 +1209,7 @@ func (s *Store) AppendRecall(
 	mode string,
 	semanticStatus string,
 	candidates []RecallCandidate,
+	telemetry RecallTelemetry,
 ) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -844,16 +1233,145 @@ func (s *Store) AppendRecall(
 			"lesson_version_id": candidate.LessonVersionID,
 			"rank":              candidate.Rank,
 			"score":             candidate.Score,
+			"relevance_score":   candidate.RelevanceScore,
 			"reasons":           candidate.Reasons,
 			"selected":          candidate.Selected,
 		}); err != nil {
 			return "", err
 		}
 	}
+	if _, err := s.appendEvent(tx, "recall_completed", operationID, map[string]any{
+		"attempt_id":                attemptID,
+		"retrieved_count":           telemetry.RetrievedCount,
+		"returned_count":            len(candidates),
+		"filtered_below_threshold":  telemetry.FilteredBelowThreshold,
+		"collapsed_by_cluster":      telemetry.CollapsedByCluster,
+		"trimmed_by_adaptive_limit": telemetry.TrimmedByAdaptiveLimit,
+		"applied_top_k":             telemetry.AppliedTopK,
+		"applied_min_relevance":     telemetry.AppliedMinRelevance,
+		"abstention_reason":         telemetry.AbstentionReason,
+		"index_sync_latency_ms":     telemetry.IndexSyncLatencyMS,
+		"search_latency_ms":         telemetry.SearchLatencyMS,
+		"hydration_latency_ms":      telemetry.HydrationLatencyMS,
+		"request_bytes":             telemetry.RequestBytes,
+		"response_bytes":            telemetry.ResponseBytes,
+	}); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
 	return attemptID, nil
+}
+
+func (s *Store) RecallPerformance(ctx context.Context) (map[string]any, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(CAST(json_extract(payload_json, '$.retrieved_count') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.returned_count') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.filtered_below_threshold') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.collapsed_by_cluster') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.trimmed_by_adaptive_limit') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.applied_min_relevance') AS REAL), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.index_sync_latency_ms') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.search_latency_ms') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.hydration_latency_ms') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.request_bytes') AS INTEGER), 0),
+			COALESCE(CAST(json_extract(payload_json, '$.response_bytes') AS INTEGER), 0)
+		FROM event_log WHERE event_type = 'recall_completed' ORDER BY sequence`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var attempts, abstentions, requestBytes, responseBytes int64
+	var retrieved, returned, filtered, collapsed, adaptiveTrimmed int64
+	var thresholdTotal float64
+	latencies := make([]int64, 0)
+	indexLatencies := make([]int64, 0)
+	searchLatencies := make([]int64, 0)
+	hydrationLatencies := make([]int64, 0)
+	for rows.Next() {
+		var rowRetrieved, rowReturned, rowFiltered, rowCollapsed, rowAdaptiveTrimmed int64
+		var threshold float64
+		var indexLatency, searchLatency, hydrationLatency, requestSize, responseSize int64
+		if err := rows.Scan(
+			&rowRetrieved, &rowReturned, &rowFiltered, &rowCollapsed, &rowAdaptiveTrimmed,
+			&threshold,
+			&indexLatency, &searchLatency, &hydrationLatency, &requestSize, &responseSize,
+		); err != nil {
+			return nil, err
+		}
+		attempts++
+		if rowReturned == 0 {
+			abstentions++
+		}
+		retrieved += rowRetrieved
+		returned += rowReturned
+		filtered += rowFiltered
+		collapsed += rowCollapsed
+		adaptiveTrimmed += rowAdaptiveTrimmed
+		thresholdTotal += threshold
+		requestBytes += requestSize
+		responseBytes += responseSize
+		latencies = append(latencies, indexLatency+searchLatency+hydrationLatency)
+		indexLatencies = append(indexLatencies, indexLatency)
+		searchLatencies = append(searchLatencies, searchLatency)
+		hydrationLatencies = append(hydrationLatencies, hydrationLatency)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	average := func(total int64) float64 {
+		if attempts == 0 {
+			return 0
+		}
+		return float64(total) / float64(attempts)
+	}
+	averageThreshold := 0.0
+	zeroResultRate := 0.0
+	if attempts > 0 {
+		averageThreshold = thresholdTotal / float64(attempts)
+		zeroResultRate = float64(abstentions) / float64(attempts)
+	}
+	return map[string]any{
+		"attempts":                          attempts,
+		"abstentions":                       abstentions,
+		"zero_result_rate":                  zeroResultRate,
+		"average_retrieved":                 average(retrieved),
+		"average_returned":                  average(returned),
+		"average_filtered_below_threshold":  average(filtered),
+		"average_collapsed_by_cluster":      average(collapsed),
+		"average_trimmed_by_adaptive_limit": average(adaptiveTrimmed),
+		"average_min_relevance":             averageThreshold,
+		"request_bytes":                     requestBytes,
+		"response_bytes":                    responseBytes,
+		"total_io_bytes":                    requestBytes + responseBytes,
+		"latency_ms":                        latencyDistribution(latencies),
+		"phase_latency_ms": map[string]map[string]int64{
+			"index_sync": latencyDistribution(indexLatencies),
+			"search":     latencyDistribution(searchLatencies),
+			"hydration":  latencyDistribution(hydrationLatencies),
+		},
+	}, nil
+}
+
+func latencyDistribution(values []int64) map[string]int64 {
+	if len(values) == 0 {
+		return map[string]int64{"p50": 0, "p95": 0, "max": 0}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	percentile := func(numerator int) int64 {
+		index := (len(values)*numerator + 99) / 100
+		if index < 1 {
+			index = 1
+		}
+		return values[index-1]
+	}
+	return map[string]int64{
+		"p50": percentile(50),
+		"p95": percentile(95),
+		"max": values[len(values)-1],
+	}
 }
 
 func (s *Store) ListLessons(ctx context.Context) ([]model.LessonDocument, error) {
@@ -876,6 +1394,10 @@ func listLessons(ctx context.Context, queryer lessonQueryer) ([]model.LessonDocu
 		return nil, err
 	}
 	defer rows.Close()
+	return scanLessons(rows)
+}
+
+func scanLessons(rows *sql.Rows) ([]model.LessonDocument, error) {
 	var lessons []model.LessonDocument
 	for rows.Next() {
 		var lesson model.LessonDocument
@@ -912,11 +1434,11 @@ func (s *Store) LessonSnapshot(
 		return nil, 0, "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	revision, err := lessonRevisionTx(ctx, tx)
+	revision, err := retrievalRevisionTx(ctx, tx)
 	if err != nil {
 		return nil, 0, "", err
 	}
-	lessons, err := listLessons(ctx, tx)
+	lessons, err := listSearchableLessons(ctx, tx)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -924,6 +1446,25 @@ func (s *Store) LessonSnapshot(
 		return nil, 0, "", err
 	}
 	return lessons, revision, lessonmanifest.Digest(lessons), nil
+}
+
+func listSearchableLessons(
+	ctx context.Context,
+	queryer lessonQueryer,
+) ([]model.LessonDocument, error) {
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT l.lesson_id, l.lesson_version_id, l.signature, l.title, l.rule,
+		       l.prevention, l.verification, l.applicability, l.counterexamples,
+		       l.cause_layer, l.failure_mode, l.component, l.document, l.created_at
+		FROM lesson_projection l
+		JOIN lesson_lifecycle_projection c USING(lesson_version_id)
+		WHERE c.state NOT IN ('false_positive', 'superseded', 'stale')
+		ORDER BY l.created_at, l.lesson_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanLessons(rows)
 }
 
 func (s *Store) LessonByVersion(ctx context.Context, versionID string) (model.LessonDocument, bool, error) {
@@ -958,6 +1499,26 @@ func (s *Store) LessonByVersion(ctx context.Context, versionID string) (model.Le
 	}
 	lesson.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	return lesson, true, nil
+}
+
+func (s *Store) RetrievalRepresentatives(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT lesson_version_id, representative_lesson_version_id
+		FROM lesson_lifecycle_projection
+		WHERE state NOT IN ('false_positive', 'superseded', 'stale')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]string{}
+	for rows.Next() {
+		var versionID, representative string
+		if err := rows.Scan(&versionID, &representative); err != nil {
+			return nil, err
+		}
+		result[versionID] = representative
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) Counts(ctx context.Context) (map[string]int64, error) {
@@ -1002,6 +1563,7 @@ func (s *Store) OutcomeCounts(ctx context.Context) (map[string]map[string]int64,
 	result := map[string]map[string]int64{
 		"recall": {},
 		"repair": {},
+		"lesson": {},
 	}
 	for category, eventType := range map[string]string{
 		"recall": "recall_outcome_observed",
@@ -1031,7 +1593,182 @@ func (s *Store) OutcomeCounts(ctx context.Context) (map[string]map[string]int64,
 			return nil, err
 		}
 	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT json_extract(payload_json, '$.target_type'),
+		       json_extract(payload_json, '$.outcome'), COUNT(*)
+		FROM event_log
+		WHERE event_type = 'memory_outcome_observed'
+		GROUP BY json_extract(payload_json, '$.target_type'),
+		         json_extract(payload_json, '$.outcome')
+		ORDER BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var category, outcome string
+		var count int64
+		if err := rows.Scan(&category, &outcome, &count); err != nil {
+			return nil, err
+		}
+		if result[category] == nil {
+			result[category] = map[string]int64{}
+		}
+		result[category][outcome] += count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+func (s *Store) LessonLifecycleCounts(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT state, COUNT(*)
+		FROM lesson_lifecycle_projection
+		GROUP BY state ORDER BY state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]int64{
+		"active": 0, "proposed": 0, "false_positive": 0,
+		"stale": 0, "superseded": 0,
+	}
+	for rows.Next() {
+		var state string
+		var count int64
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, err
+		}
+		result[state] = count
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) OutcomeCoverage(ctx context.Context) (map[string]map[string]any, error) {
+	queries := map[string][2]string{
+		"recall": {
+			"SELECT COUNT(*) FROM event_log WHERE event_type = 'recall_attempted'",
+			`SELECT COUNT(DISTINCT target_id) FROM (
+				SELECT json_extract(payload_json, '$.target_id') AS target_id
+				FROM event_log WHERE event_type = 'memory_outcome_observed'
+				  AND json_extract(payload_json, '$.target_type') = 'recall'
+				UNION
+				SELECT json_extract(payload_json, '$.recall_attempt_id')
+				FROM event_log WHERE event_type = 'recall_outcome_observed'
+			) WHERE target_id IS NOT NULL`,
+		},
+		"repair": {
+			"SELECT COUNT(*) FROM event_log WHERE event_type = 'repair_recommended'",
+			`SELECT COUNT(DISTINCT target_id) FROM (
+				SELECT json_extract(payload_json, '$.target_id') AS target_id
+				FROM event_log WHERE event_type = 'memory_outcome_observed'
+				  AND json_extract(payload_json, '$.target_type') = 'repair'
+				UNION
+				SELECT json_extract(payload_json, '$.repair_recommendation_id')
+				FROM event_log WHERE event_type = 'repair_outcome_observed'
+			) WHERE target_id IS NOT NULL`,
+		},
+		"lesson": {
+			"SELECT COUNT(*) FROM lesson_projection",
+			`SELECT COUNT(DISTINCT json_extract(payload_json, '$.target_id'))
+			 FROM event_log WHERE event_type = 'memory_outcome_observed'
+			   AND json_extract(payload_json, '$.target_type') = 'lesson'`,
+		},
+	}
+	result := map[string]map[string]any{}
+	for category, pair := range queries {
+		var eligible, observed int64
+		if err := s.db.QueryRowContext(ctx, pair[0]).Scan(&eligible); err != nil {
+			return nil, err
+		}
+		if err := s.db.QueryRowContext(ctx, pair[1]).Scan(&observed); err != nil {
+			return nil, err
+		}
+		rate := 0.0
+		if eligible > 0 {
+			rate = float64(observed) / float64(eligible)
+		}
+		result[category] = map[string]any{
+			"eligible": eligible, "observed": observed, "coverage_rate": rate,
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) HarnessUsage(ctx context.Context) (map[string]map[string]any, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(source_harness, ''), 'unknown'),
+		       MIN(occurred_at), MAX(occurred_at), COUNT(*),
+		       SUM(CASE WHEN event_type = 'capture_evaluated' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type = 'recall_attempted' THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN event_type IN (
+		           'memory_outcome_observed', 'recall_outcome_observed',
+		           'repair_outcome_observed') THEN 1 ELSE 0 END)
+		FROM event_log
+		GROUP BY COALESCE(NULLIF(source_harness, ''), 'unknown')
+		ORDER BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]map[string]any{}
+	for rows.Next() {
+		var harness, firstUsed, lastUsed string
+		var events, captures, recalls, outcomes int64
+		if err := rows.Scan(
+			&harness, &firstUsed, &lastUsed, &events, &captures, &recalls, &outcomes,
+		); err != nil {
+			return nil, err
+		}
+		result[harness] = map[string]any{
+			"first_used_at": firstUsed, "last_used_at": lastUsed, "events": events,
+			"captures": captures, "recalls": recalls, "outcomes": outcomes,
+		}
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) GeneralizationBacklog(ctx context.Context) (map[string]any, error) {
+	var clusterPending, onlineSuggestions int64
+	var oldestCluster, oldestOnline sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), MIN(proposal.occurred_at)
+		FROM event_log proposal
+		WHERE proposal.event_type = 'generalization_proposal_created'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM event_log review
+		      WHERE review.event_type = 'generalization_proposal_reviewed'
+		        AND json_extract(review.payload_json, '$.run_id') = json_extract(proposal.payload_json, '$.run_id')
+		        AND json_extract(review.payload_json, '$.cluster_key') = json_extract(proposal.payload_json, '$.cluster_key')
+		        AND json_extract(review.payload_json, '$.decision') IN ('accept', 'reject')
+		  )`).Scan(&clusterPending, &oldestCluster); err != nil {
+		return nil, err
+	}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*), MIN(event.occurred_at)
+		FROM event_log event
+		JOIN lesson_lifecycle_projection lifecycle
+		  ON lifecycle.lesson_version_id = json_extract(event.payload_json, '$.new_lesson_version_id')
+		WHERE event.event_type = 'generalization_review_proposed'
+		  AND lifecycle.state NOT IN ('false_positive', 'stale', 'superseded')`).Scan(
+		&onlineSuggestions, &oldestOnline,
+	); err != nil {
+		return nil, err
+	}
+	oldestAt := ""
+	for _, candidate := range []sql.NullString{oldestCluster, oldestOnline} {
+		if candidate.Valid && (oldestAt == "" || candidate.String < oldestAt) {
+			oldestAt = candidate.String
+		}
+	}
+	return map[string]any{
+		"pending":                   clusterPending + onlineSuggestions,
+		"cluster_proposals_pending": clusterPending,
+		"online_suggestions":        onlineSuggestions,
+		"oldest_pending_at":         oldestAt,
+	}, nil
 }
 
 func (s *Store) Doctor(ctx context.Context) (map[string]any, error) {
@@ -1067,6 +1804,10 @@ func (s *Store) Doctor(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	lessonRevision, err := s.LessonRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
 	version, err := s.SchemaVersion(ctx)
 	if err != nil {
 		return nil, err
@@ -1078,7 +1819,8 @@ func (s *Store) Doctor(ctx context.Context) (map[string]any, error) {
 		"integrity_check":        integrity,
 		"event_hash_errors":      bad,
 		"counts":                 counts,
-		"lesson_revision":        revision,
+		"lesson_revision":        lessonRevision,
+		"retrieval_revision":     revision,
 		"lesson_manifest_sha256": manifest,
 		"manifest_lesson_count":  len(lessons),
 	}, nil
@@ -1090,12 +1832,21 @@ func (s *Store) appendEvent(
 	operationID string,
 	payload any,
 ) (string, error) {
+	return s.appendEventWithID(tx, identity.New("event"), eventType, operationID, payload)
+}
+
+func (s *Store) appendEventWithID(
+	tx *sql.Tx,
+	eventID string,
+	eventType string,
+	operationID string,
+	payload any,
+) (string, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(data)
-	eventID := identity.New("event")
 	_, err = tx.Exec(`
 		INSERT INTO event_log(
 			event_id, event_type, schema_version, occurred_at, source_harness,

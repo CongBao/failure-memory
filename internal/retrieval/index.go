@@ -466,12 +466,20 @@ func (i *Index) Search(ctx context.Context, input model.RecallInput) (SearchResu
 	default:
 		return SearchResult{}, fmt.Errorf("unsupported retrieval mode %q", mode)
 	}
+	adaptiveTopK := input.TopK <= 0
 	topK := input.TopK
 	if topK <= 0 {
 		topK = 3
 	}
 	if topK > 3 {
 		topK = 3
+	}
+	minRelevance := input.MinRelevance
+	if minRelevance < 0 || minRelevance > 1 {
+		return SearchResult{}, errors.New("min_relevance must be between 0 and 1")
+	}
+	if minRelevance == 0 {
+		minRelevance = defaultMinRelevance(mode, i.embedder.Semantic())
 	}
 	query := recallText(input)
 	result := SearchResult{Mode: mode}
@@ -482,7 +490,7 @@ func (i *Index) Search(ctx context.Context, input model.RecallInput) (SearchResu
 	}
 
 	rankings := map[string]map[string]int{}
-	rawScores := map[string]float64{}
+	rawScores := map[string]map[string]float64{}
 	if mode == "exact" || mode == "hybrid" {
 		exact, err := i.exact(ctx, input, 12)
 		if err != nil {
@@ -521,11 +529,16 @@ func (i *Index) Search(ctx context.Context, input model.RecallInput) (SearchResu
 			}
 			score += weight / float64(60+rank)
 		}
-		score += rawScores[versionID] * 0.0001
+		raw := rawScores[versionID]
+		relevance := calibratedRelevance(reasons, raw)
+		for _, value := range raw {
+			score += value * 0.0001
+		}
 		sort.Strings(names)
 		candidates = append(candidates, Candidate{
 			LessonVersionID: versionID,
 			Score:           score,
+			RelevanceScore:  relevance,
 			Reasons:         names,
 		})
 	}
@@ -535,11 +548,75 @@ func (i *Index) Search(ctx context.Context, input model.RecallInput) (SearchResu
 		}
 		return candidates[left].Score > candidates[right].Score
 	})
+	retrievedCount := len(candidates)
+	eligible := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.RelevanceScore >= minRelevance {
+			eligible = append(eligible, candidate)
+		}
+	}
+	filtered := retrievedCount - len(eligible)
+	candidates = eligible
+	if len(input.Representatives) > 0 {
+		seen := map[string]bool{}
+		collapsed := candidates[:0]
+		for _, candidate := range candidates {
+			representative := resolvedRepresentative(
+				candidate.LessonVersionID, input.Representatives,
+			)
+			if seen[representative] {
+				result.CollapsedByCluster++
+				continue
+			}
+			seen[representative] = true
+			collapsed = append(collapsed, candidate)
+		}
+		candidates = collapsed
+	}
+	if adaptiveTopK && len(candidates) > 1 {
+		beforeAdaptiveLimit := len(candidates)
+		limit := 1
+		for limit < len(candidates) && limit < topK &&
+			candidates[0].RelevanceScore-candidates[limit].RelevanceScore <= 0.02 {
+			limit++
+		}
+		candidates = candidates[:limit]
+		result.TrimmedByAdaptiveLimit = beforeAdaptiveLimit - limit
+	}
 	if len(candidates) > topK {
 		candidates = candidates[:topK]
 	}
 	result.Candidates = candidates
+	result.RetrievedCount = retrievedCount
+	result.FilteredBelowThreshold = filtered
+	result.AppliedTopK = topK
+	result.AppliedMinRelevance = minRelevance
+	if len(candidates) == 0 && retrievedCount > 0 {
+		result.AbstentionReason = "no_candidate_met_relevance_threshold"
+	}
 	return result, nil
+}
+
+func resolvedRepresentative(versionID string, representatives map[string]string) string {
+	current := versionID
+	seen := map[string]bool{}
+	for {
+		if seen[current] {
+			// Corrupt/cyclic projections must still collapse deterministically.
+			members := make([]string, 0, len(seen))
+			for member := range seen {
+				members = append(members, member)
+			}
+			sort.Strings(members)
+			return members[0]
+		}
+		seen[current] = true
+		next := representatives[current]
+		if next == "" || next == current {
+			return current
+		}
+		current = next
+	}
 }
 
 // Clusters groups nearby lesson vectors without mutating any lesson. The
@@ -742,16 +819,65 @@ func (i *Index) vector(ctx context.Context, query string, limit int) ([]Candidat
 
 func addRanking(
 	rankings map[string]map[string]int,
-	rawScores map[string]float64,
+	rawScores map[string]map[string]float64,
 	reason string,
 	candidates []Candidate,
 ) {
 	for index, candidate := range candidates {
 		if rankings[candidate.LessonVersionID] == nil {
 			rankings[candidate.LessonVersionID] = map[string]int{}
+			rawScores[candidate.LessonVersionID] = map[string]float64{}
 		}
 		rankings[candidate.LessonVersionID][reason] = index + 1
-		rawScores[candidate.LessonVersionID] += candidate.Score
+		rawScores[candidate.LessonVersionID][reason] = candidate.Score
+	}
+}
+
+func calibratedRelevance(reasons map[string]int, raw map[string]float64) float64 {
+	if _, exact := reasons["exact"]; exact {
+		return 1
+	}
+	vector := math.Max(raw["semantic"], raw["vector"])
+	if vector < 0 {
+		vector = 0
+	}
+	if vector > 1 {
+		vector = 1
+	}
+	lexical := 0.0
+	if rank, ok := reasons["lexical"]; ok && rank > 0 {
+		// SQLite FTS5 BM25 magnitudes vary with corpus size and are often tiny.
+		// Rank is stable enough to calibrate lexical evidence to a bounded value.
+		lexical = 1 / float64(rank+1)
+	}
+	if _, ok := reasons["lexical"]; ok {
+		if _, semantic := reasons["semantic"]; semantic {
+			return vector
+		}
+		if _, fallback := reasons["vector"]; fallback {
+			return 0.7*vector + 0.3*lexical
+		}
+		return lexical
+	}
+	return vector
+}
+
+func defaultMinRelevance(mode string, semantic bool) float64 {
+	switch mode {
+	case "exact":
+		return 1
+	case "lexical":
+		return 0.15
+	case "semantic":
+		if semantic {
+			return 0.84
+		}
+		return 0.45
+	default:
+		if semantic {
+			return 0.84
+		}
+		return 0.45
 	}
 }
 

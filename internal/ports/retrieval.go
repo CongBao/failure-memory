@@ -13,13 +13,21 @@ import (
 type Candidate struct {
 	LessonVersionID string
 	Score           float64
+	RelevanceScore  float64
 	Reasons         []string
 }
 
 type SearchResult struct {
-	Mode           string
-	SemanticStatus string
-	Candidates     []Candidate
+	Mode                   string
+	SemanticStatus         string
+	Candidates             []Candidate
+	RetrievedCount         int
+	FilteredBelowThreshold int
+	CollapsedByCluster     int
+	TrimmedByAdaptiveLimit int
+	AppliedTopK            int
+	AppliedMinRelevance    float64
+	AbstentionReason       string
 }
 
 type VectorCluster struct {

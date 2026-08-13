@@ -1,5 +1,5 @@
 {
-  "contract_version": 6,
+  "contract_version": 8,
   "policy_kind": "recall_failure",
   "skill": {
     "name": "recall-failure-lessons",
@@ -12,25 +12,19 @@
       "recall"
     ],
     "default_mode": "auto",
-    "default_top_k": 3,
+    "selection": "relevance_threshold_then_cluster_collapse_then_top_k",
+    "default_top_k": "adaptive",
     "maximum_top_k": 3,
+    "default_min_relevance": "retrieval_profile_calibrated",
     "call_limit": 1,
     "required_context": "text",
-    "discriminators": [
+    "optional_discriminators": [
       "expected_invariant",
       "controllable_cause",
       "prevention_action",
       "component"
     ],
-    "minimum_query": {
-      "all": ["text"],
-      "at_least_one": [
-        "expected_invariant",
-        "controllable_cause",
-        "prevention_action",
-        "component"
-      ]
-    },
+    "minimum_query": {"all": ["text"]},
     "input_fields": {
       "text": {"type": "string", "required": true, "nonempty": true, "maximum_bytes": 4000},
       "expected_invariant": {"type": "string", "required": false, "nonempty_when_present": true, "maximum_bytes": 4000},
@@ -46,7 +40,15 @@
         "type": "integer",
         "required": false,
         "minimum": 1,
-        "maximum": 3
+        "maximum": 3,
+        "semantics": "maximum_results_after_threshold_and_cluster_collapse"
+      },
+      "min_relevance": {
+        "type": "number",
+        "required": false,
+        "minimum": 0,
+        "maximum": 1,
+        "semantics": "minimum_calibrated_relevance_before_top_k; zero selects_the_profile_default"
       }
     },
     "allow_unknown_fields": false,
@@ -61,6 +63,10 @@
       "unnecessary paths"
     ],
     "allow_query_broadening": false,
+    "allow_empty_result": true,
+    "never_lower_threshold_to_fill_top_k": true,
+    "outcome_tool": "report_memory_outcome",
+    "outcome_only_when_verified": true,
     "allow_dependency_install": false,
     "lesson_authority": "proposed caution"
   }
