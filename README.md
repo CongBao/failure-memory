@@ -1,12 +1,28 @@
-# Failure Memory
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/logo.svg">
+    <img alt="Failure Memory logo" src="./assets/logo.svg" width="120">
+  </picture>
+</p>
+
+<h1 align="center">Failure Memory</h1>
+
+<p align="center"><strong>Remember verified failures. Recall the lesson before repeating them.</strong></p>
 
 [![CI](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/CongBao/failure-memory/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/CongBao/failure-memory)](https://github.com/CongBao/failure-memory/releases/latest)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Failure Memory gives AI coding agents a shared, local memory of verified failures.
-It helps agents avoid repeating a mistake without treating every correction, preference,
-or newly supplied requirement as a failure.
+AI coding agents receive valuable corrections, but those lessons usually disappear with
+the session. Saving every correction creates the opposite problem: preferences, new
+details, and changed requirements pollute memory as if they were mistakes.
+
+Failure Memory gives agents one shared, local store of verified failures. It recalls
+relevant lessons before similar work and tracks whether those lessons actually helped,
+without treating every user correction as a failure.
+
+## What it does
 
 It can:
 
