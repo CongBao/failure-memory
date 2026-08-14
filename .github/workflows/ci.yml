@@ -34,6 +34,7 @@ jobs:
           ! git grep -n '/Users/' -- ':!.github/workflows/ci.yml'
           ! git grep -n '#!/usr/bin/env python' -- ':!docs/**' ':!.github/workflows/ci.yml'
           sh -n scripts/install.sh
+          sh -n scripts/release-notes.sh
 
   race:
     runs-on: ubuntu-latest
@@ -55,7 +56,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: ShellCheck installer
         if: runner.os == 'Linux'
-        run: shellcheck scripts/install.sh
+        run: shellcheck scripts/install.sh scripts/release-notes.sh
       - name: Analyze PowerShell installer
         if: runner.os == 'Windows'
         shell: pwsh

@@ -92,6 +92,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: release
@@ -107,10 +108,12 @@ jobs:
           FAILURE_MEMORY_HOME="$root/data" "$root/failure-memory" doctor
       - name: Checksums
         run: cd release && sha256sum failure-memory_* > checksums.txt
+      - name: Prepare release notes
+        run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > release-notes.md
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: "release/*"
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          generate_release_notes: true
+          body_path: release-notes.md
           files: release/*
